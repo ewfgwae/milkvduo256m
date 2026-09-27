@@ -3,13 +3,17 @@
   日期: 2026-09-28        文件位置: /root/指南/2026.9.28.txt
 ================================================================================
 
-【写法约定见同目录 readme.txt】本文件分两部分: 第一章"环境与约定" + 第八章"变更记录"。
-每条记录的时间精确到分钟(UTC+8); 确实取不到准确时间的(旧记录)只写日期。
+【写法约定见同目录 readme.txt】本文件分两大部分, 一律按要点分条写:
+  第一部分"环境与约定"(第一~七章) —— 接手的人必须先知道的一切, 一条一个知识点;
+  第二部分"变更记录"(第八章)       —— 按时间顺序记流水账, 一条一件事。
+每条记录的时间精确到分钟(UTC+8); 确实取不到准确时间的旧记录只写日期, 不编造。
 
-★ 安全铁律: fip.bin 是唯一的引导固件, 不要随手动它。本板有 SD 读卡器, 最坏情况可以
-  重写整卡救回来, 但要拆机取卡、代价高。除非"常驻跳板本身要改"或"热更后小核彻底起
-  不来", 否则改小核固件一律走"热更"(见第五章) —— 它不碰 fip.bin、不重启系统。
-  万一必须重打包 fip, 做完必须做字节级校验: 除小核固件段(BLCP_2ND)外其余逐字节不变。
+★ 安全铁律 (三条, 每次动手前先过一遍)
+  1) fip.bin 是唯一的引导固件, 不要随手动它。本板有 SD 读卡器, 最坏情况可以重写整卡
+     救回来, 但要拆机取卡、代价高。
+  2) 改小核固件一律走"热更"(见第五章) —— 它不碰 fip.bin、不重启系统。
+     只有"常驻跳板本身要改"或"热更后小核彻底起不来"才动 fip(见 5.3)。
+  3) 万一必须重打包 fip, 做完必须做字节级校验: 除小核固件段(BLCP_2ND)外, 其余逐字节不变。
 
 ================================================================================
  一、环境与约定  (下一个接手的人必须先知道的一切)
@@ -17,57 +21,54 @@
 
 1.1 本机(PC)侧的编译环境 —— WSL
 --------------------------------------------------------------------------------
-  发行版             : Ubuntu-22.04      (默认用户 chen, SDK 已装好)
-  SDK 根目录         : /home/chen/duo-sdk-v2
-  小核固件工程       : /home/chen/duo-sdk-v2/freertos/cvitek
-  小核固件产物       : /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin
-                       ★ 是 install/bin, 不是 build/install/bin
-  小核构建树         : /home/chen/duo-sdk-v2/freertos/cvitek/build/
-                       下分 arch / kernel / common / hal / driver / task 六个子目录;
-                       可以各自 `cmake --build . --target install`,
-                       最后在 task 里再 `cmake --build . --target cvirtos.bin`。
-   riscv64 工具链目录 : /home/chen/duo-sdk-v2/host-tools/gcc/riscv64-elf-x86_64/bin
-                       ★ 目录名是 riscv64-elf-x86_64, 但里面的二进制前缀是
-                         riscv64-unknown-elf-  (两者不一致, 别拼错)
-  aarch64 交叉编译器 : /home/chen/duo-sdk-v2/host-tools/gcc/
-                       gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/
-                       aarch64-linux-gnu-gcc
-  大核程序源码       : ~/lcdhost/lcd_sender.c   (编译产物 ~/lcdhost/lcd_sender)
+  1) 发行版       : Ubuntu-22.04      (默认用户 chen, SDK 已装好)
+  2) SDK 根目录   : /home/chen/duo-sdk-v2
+  3) 小核固件工程 : /home/chen/duo-sdk-v2/freertos/cvitek
+  4) 小核固件产物 : /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin
+                    ★ 是 install/bin, 不是 build/install/bin
+  5) 小核构建树   : /home/chen/duo-sdk-v2/freertos/cvitek/build/
+                    下分 arch / kernel / common / hal / driver / task 六个子目录;
+                    可各自 `cmake --build . --target install`,
+                    最后在 task 里再 `cmake --build . --target cvirtos.bin`。
+  6) riscv64 工具链目录:
+                    /home/chen/duo-sdk-v2/host-tools/gcc/riscv64-elf-x86_64/bin
+                    ★ 目录名是 riscv64-elf-x86_64, 但里面的二进制前缀是
+                      riscv64-unknown-elf-  (两者不一致, 别拼错)
+  7) aarch64 交叉编译器:
+                    /home/chen/duo-sdk-v2/host-tools/gcc/
+                    gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/
+                    aarch64-linux-gnu-gcc
+  8) 大核程序源码 : ~/lcdhost/lcd_sender.c   (编译产物 ~/lcdhost/lcd_sender)
 
 1.2 从 Windows 调 WSL 的规矩  (每一条都是踩过坑总结出来的)
 --------------------------------------------------------------------------------
-  ★ 多行/复杂命令必须先写成 .sh 文件再执行, 不要用内联引号:
-       wsl -d Ubuntu-22.04 bash -lc "..."        <-- 禁止!
-     PowerShell 会把 $、&&、管道、引号全吃掉(历史上就是这么把工具链 PATH 搞丢的)。
-     正确做法两步:
+  1) ★ 多行/复杂命令必须先写成 .sh 文件再执行, 不要用内联引号:
+       禁止: wsl -d Ubuntu-22.04 bash -lc "..."
+       —— PowerShell 会把 $、&&、管道、引号全吃掉(历史上就是这么把工具链 PATH 搞丢的)。
+     正确两步:
        (1) 把脚本写到  C:\Users\1\AppData\Local\Temp\xxx.sh
        (2) 执行        wsl -d Ubuntu-22.04 bash /mnt/c/Users/1/AppData/Local/Temp/xxx.sh
-
-  ★ 编小核固件要用 root 身份进 WSL:
+  2) ★ 编小核固件要用 root 身份进 WSL:
        wsl -d Ubuntu-22.04 -u root bash /mnt/c/Users/1/AppData/Local/Temp/xxx.sh
      原因: build 树里有上百个 root 属主的文件, 用 chen 跑会卡在
            "Error writing to build log: Permission denied"; 而 sudo 要输密码。
-
-  ★ 编译前必须先手工 export 工具链 PATH:
+  3) ★ 编译前必须先手工 export 工具链 PATH:
        export PATH=/home/chen/duo-sdk-v2/host-tools/gcc/riscv64-elf-x86_64/bin:$PATH
-
-  ★ 读 WSL 里的文件用 UNC 路径:  \\wsl.localhost\Ubuntu-22.04\home\chen\...
-  ★ Windows 的 D 盘在 WSL 里是 /mnt/d/...   (路径带空格要加引号)
+  4) 读 WSL 里的文件用 UNC 路径:  \\wsl.localhost\Ubuntu-22.04\home\chen\...
+  5) Windows 的 D 盘在 WSL 里是 /mnt/d/...   (路径带空格要加引号)
 
 1.3 板子侧
 --------------------------------------------------------------------------------
-  IP 192.168.42.1    用户 root    密码 milkv     (USB RNDIS 网卡, 插上就有)
-
-  免交互 ssh / scp (脚本里用, 密码 milkv 由 SSH_ASKPASS 提供):
-      printf '#!/bin/sh\necho milkv\n' > /tmp/ap.sh ; chmod +x /tmp/ap.sh
-      export SSH_ASKPASS=/tmp/ap.sh
-      export SSH_ASKPASS_REQUIRE=force
-      setsid ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.42.1
-      setsid scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 本地文件 root@192.168.42.1:/root/
-    ★ 必须配 setsid, 否则会卡在交互式密码输入出不来。
-
-  提示: /tmp 是 tmpfs(76MB), 重启即清空, 想长期保存的文件放 /root。
-        板上返回码用 `ssh ... 'cmd'; echo $?` 拿, 别靠肉眼判断。
+  1) IP 192.168.42.1    用户 root    密码 milkv     (USB RNDIS 网卡, 插上就有)
+  2) 免交互 ssh / scp (脚本里用, 密码 milkv 由 SSH_ASKPASS 提供):
+       printf '#!/bin/sh\necho milkv\n' > /tmp/ap.sh ; chmod +x /tmp/ap.sh
+       export SSH_ASKPASS=/tmp/ap.sh
+       export SSH_ASKPASS_REQUIRE=force
+       setsid ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.42.1
+       setsid scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 本地文件 root@192.168.42.1:/root/
+     ★ 必须配 setsid, 否则会卡在交互式密码输入出不来。
+  3) /tmp 是 tmpfs(76MB), 重启即清空; 想长期保存的文件放 /root。
+  4) 板上返回码用 `ssh ... 'cmd' ; echo $?` 拿, 别靠肉眼判断。
 
 ================================================================================
  二、编译指令
@@ -75,24 +76,23 @@
 
 2.1 编译【小核 RISC-V C906L 固件】cvirtos.bin   —— 每次改小核代码后执行
 --------------------------------------------------------------------------------
-    cd ~/duo-sdk-v2
-    source build/envsetup_milkv.sh milkv-duo256m-glibc-arm64-sd
-    cd build
-    make rtos
-
-    # 产物:
-    ls -l ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin
-
-  说明: 必须先 source envsetup 设置好交叉编译环境, 再进 build 目录 make。
-        source 只对当前 shell 生效, 每开一个新终端都要重做一次。
-        rtos 源码工程真源备份在 PC 的 TFT-ST7789/rtos_lcd/ 下。
+  1) 命令:
+       cd ~/duo-sdk-v2
+       source build/envsetup_milkv.sh milkv-duo256m-glibc-arm64-sd
+       cd build
+       make rtos
+  2) 产物:
+       ls -l ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin
+  3) 说明: 必须先 source envsetup 设置好交叉编译环境, 再进 build 目录 make。
+           source 只对当前 shell 生效, 每开一个新终端都要重做一次。
+  4) 说明: rtos 源码工程真源备份在 PC 的 TFT-ST7789/rtos_lcd/ 下。
 
 2.2 编译【大核 aarch64 Linux 程序】lcd_sender   —— 每次改大核代码后执行
 --------------------------------------------------------------------------------
-    GCC=~/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc
-    $GCC -O2 -Wall -static -o ~/lcdhost/lcd_sender ~/lcdhost/lcd_sender.c
-
-  说明: 用 -static 静态链接, 避免板子上缺库跑不起来。
+  1) 命令:
+       GCC=~/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc
+       $GCC -O2 -Wall -static -o ~/lcdhost/lcd_sender ~/lcdhost/lcd_sender.c
+  2) 说明: 用 -static 静态链接, 避免板子上缺库跑不起来。
 
 ================================================================================
  三、拷贝文件到板子 /root 的指令 (scp)
@@ -100,21 +100,21 @@
 
 3.1 交互式(手输密码 milkv)
 --------------------------------------------------------------------------------
-    scp ~/lcdhost/lcd_sender root@192.168.42.1:/root/lcd_sender
-    scp ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin root@192.168.42.1:/root/cvirtos.bin
+  1) scp ~/lcdhost/lcd_sender root@192.168.42.1:/root/lcd_sender
+  2) scp ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin root@192.168.42.1:/root/cvirtos.bin
 
 3.2 免交互(脚本/自动化里用, 密码 milkv 由 SSH_ASKPASS 提供)
 --------------------------------------------------------------------------------
-    printf '#!/bin/sh\necho milkv\n' > /tmp/apX.sh ; chmod +x /tmp/apX.sh
-    export SSH_ASKPASS=/tmp/apX.sh
-    export SSH_ASKPASS_REQUIRE=force
-    setsid scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-        ~/lcdhost/lcd_sender root@192.168.42.1:/root/lcd_sender </dev/null
+  1) printf '#!/bin/sh\necho milkv\n' > /tmp/apX.sh ; chmod +x /tmp/apX.sh
+  2) export SSH_ASKPASS=/tmp/apX.sh
+  3) export SSH_ASKPASS_REQUIRE=force
+  4) setsid scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+         ~/lcdhost/lcd_sender root@192.168.42.1:/root/lcd_sender </dev/null
 
 3.3 免交互登录执行(同上先做 SSH_ASKPASS 那三行)
 --------------------------------------------------------------------------------
-    setsid ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        root@192.168.42.1
+  1) setsid ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+         root@192.168.42.1
 
 ================================================================================
  四、在板子上执行可执行文件
@@ -122,111 +122,108 @@
 
 4.1 登录板子
 --------------------------------------------------------------------------------
-    ssh root@192.168.42.1          # 密码 milkv
+  1) ssh root@192.168.42.1          # 密码 milkv
 
 4.2 加可执行权限
 --------------------------------------------------------------------------------
-    chmod +x /root/lcd_sender
+  1) chmod +x /root/lcd_sender
 
 4.3 大核程序 lcd_sender 子命令一览
 --------------------------------------------------------------------------------
-    /root/lcd_sender stat             打印共享内存 ctrl/stat
-    /root/lcd_sender init             上电初始化屏幕(设背光, 发 LCD_CMD_INIT)
-    /root/lcd_sender scan             扫描/探测 cmdqu ioctl 接口(调试用)
-    /root/lcd_sender ping             发 LCD_CMD_PING 测通讯通路
-    /root/lcd_sender bl 1             背光开(0 = 关)
-    /root/lcd_sender fill 0xF800      整屏纯色(参数是 RGB565 十六进制)
-    /root/lcd_sender bars             画 8 条彩条, 整屏刷新一次
-    /root/lcd_sender anim 300         移动白条, 局部刷新, 跑 300 帧
-    /root/lcd_sender mon 1000         采样大核 /proc/stat, 用 mailbox 把大核 CPU
-                                      占用率发给小核 OSD 显示, 每 1000ms 一次
-    /root/lcd_sender rtos <固件文件>  热更小核固件(见第五章), 免烧 fip、免重启
-
-    后台常驻:
-    nohup /root/lcd_sender mon 1000 >/dev/null 2>&1 &
+  1)  /root/lcd_sender stat             打印共享内存 ctrl/stat
+  2)  /root/lcd_sender init             上电初始化屏幕(设背光, 发 LCD_CMD_INIT)
+  3)  /root/lcd_sender scan             扫描/探测 cmdqu ioctl 接口(调试用)
+  4)  /root/lcd_sender ping             发 LCD_CMD_PING 测通讯通路
+  5)  /root/lcd_sender bl 1             背光开(0 = 关)
+  6)  /root/lcd_sender fill 0xF800      整屏纯色(参数是 RGB565 十六进制)
+  7)  /root/lcd_sender bars             画 8 条彩条, 整屏刷新一次
+  8)  /root/lcd_sender anim 300         移动白条, 局部刷新, 跑 300 帧
+  9)  /root/lcd_sender mon 1000         采样大核 /proc/stat, 用 mailbox 把大核 CPU
+                                        占用率发给小核 OSD 显示, 每 1000ms 一次
+  10) /root/lcd_sender rtos <固件文件>  热更小核固件(见第五章), 免烧 fip、免重启
+  11) 后台常驻:
+        nohup /root/lcd_sender mon 1000 >/dev/null 2>&1 &
 
 4.4 大核 LVGL 刷屏 demo(用于和大核/小核刷屏性能对比)
 --------------------------------------------------------------------------------
-    /root/lvgl_demo
+  1) /root/lvgl_demo
 
 4.5 看小核状态(探针 g_lvgl_probe[16], 每项 8 字节)
 --------------------------------------------------------------------------------
-    # ★ 探针地址会随固件体积变化, 换了固件务必先用 nm 重查, 别照抄老地址:
-    #   nm ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.elf \
-    #      | grep -E 'g_lvgl_probe|g_dma_probe|g_spi2_probe'
-    # 下面这组地址对应 build id 0x484A0004 的固件。
-    # 读法: 第 n 项的地址 = g_lvgl_probe + n*8; 一律用 width=32 逐项读最省心
-    # (本机 busybox 的 devmem 对 64 位读法结果不稳定, 32 位逐项读最可靠)。
-    devmem 0x8fe6cb20 32     # [0]  'LVGL' 魔数头 (0x4C56474C)
-    devmem 0x8fe6cb28 32     # [1]  0x600D = demo+OSD 已建完
-    devmem 0x8fe6cb30 32     # [2]  主循环圈数(隔几秒读两次, 在涨 = 小核在跑)
-    devmem 0x8fe6cb58 32     # [7]  帧率 x10 (例: 0x1BF = 447 -> 44.7 FPS)
-    devmem 0x8fe6cb68 32     # [9]  送显耗时 us/秒   ┐
-    devmem 0x8fe6cb70 32     # [10] LVGL 处理耗时 us/秒 ├ 定位瓶颈用(见 lvgl_task.c)
-    devmem 0x8fe6cb78 32     # [11] 推给屏的像素数/秒 ┘
-    devmem 0x8fe6cb90 32     # [14] 固件 build id (0x484A0004 = 'HJ' + 序号)
-    devmem 0x8fe6cb98 32     # [15] 'MONR' 魔数尾 (0x4D4F4E52)
-    devmem 0x8ff90000 32     # 常驻热更跳板首条指令(应为 0x30401073)
-    # sysDMA 自检探针 g_dma_probe[16] (见 6.2); SPI2 送显 DMA 探针 g_spi2_probe[8] (见 6.4):
-    devmem 0x8fec4c78 32     # g_dma_probe[13]  自检结果码, 0 = 成功
-    devmem 0x8fec8168 32     # g_spi2_probe[5]  DMA 失败回退 PIO 次数, 0 = DMA 全通
+  1) ★ 探针地址会随固件体积变化, 换了固件务必先用 nm 重查, 别照抄老地址:
+       nm ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.elf \
+          | grep -E 'g_lvgl_probe|g_dma_probe|g_spi2_probe'
+  2) 读法: 第 n 项的地址 = g_lvgl_probe + n*8; 一律用 width=32 逐项读最省心
+     (本机 busybox 的 devmem 对 64 位读法结果不稳定, 32 位逐项读最可靠)。
+     下面这组地址对应 build id 0x484A0004 的固件:
+       devmem 0x8fe6cb20 32     # [0]  'LVGL' 魔数头 (0x4C56474C)
+       devmem 0x8fe6cb28 32     # [1]  0x600D = demo+OSD 已建完
+       devmem 0x8fe6cb30 32     # [2]  主循环圈数(隔几秒读两次, 在涨 = 小核在跑)
+       devmem 0x8fe6cb58 32     # [7]  帧率 x10 (例: 0x1BF = 447 -> 44.7 FPS)
+       devmem 0x8fe6cb68 32     # [9]  送显耗时 us/秒   ┐
+       devmem 0x8fe6cb70 32     # [10] LVGL 处理耗时 us/秒 ├ 定位瓶颈用(见 lvgl_task.c)
+       devmem 0x8fe6cb78 32     # [11] 推给屏的像素数/秒 ┘
+       devmem 0x8fe6cb90 32     # [14] 固件 build id (0x484A0004 = 'HJ' + 序号)
+       devmem 0x8fe6cb98 32     # [15] 'MONR' 魔数尾 (0x4D4F4E52)
+  3) 常驻热更跳板首条指令(应为 0x30401073):
+       devmem 0x8ff90000 32
+  4) sysDMA 自检探针 g_dma_probe[16] (见 6.2):
+       devmem 0x8fec4c78 32     # [13] 自检结果码, 0 = 成功
+  5) SPI2 送显 DMA 探针 g_spi2_probe[8] (见 6.4):
+       devmem 0x8fec8168 32     # [5]  DMA 失败回退 PIO 次数, 0 = DMA 全通
 
 ================================================================================
  五、烧录 / 更新小核固件 —— 现在走"热更", 不用烧 fip、不用重启
 ================================================================================
-【结论】小核固件现在是"热更": 大核程序把新固件直接写进小核内存区, 小核自己跳过去
-       重新跑。全程不动 fip.bin, 不重启系统, 不存在变砖路径。
-       只有极特殊情况(见 5.3)才需要重烧 fip。
+【结论】
+  1) 小核固件现在是"热更": 大核程序把新固件直接写进小核内存区, 小核自己跳过去重新跑。
+  2) 全程不动 fip.bin, 不重启系统, 不存在变砖路径。
+  3) 只有极特殊情况(见 5.3)才需要重烧 fip。
 
 5.1 小核固件热更(日常唯一做法)
 --------------------------------------------------------------------------------
-    板上一条命令:
-    /root/lcd_sender rtos /root/cvirtos.bin
-
-    完整流程(本机 -> 板子):
-    # 1) 本机重新编译小核固件
-    cd ~/duo-sdk-v2 && source build/envsetup_milkv.sh milkv-duo256m-glibc-arm64-sd
-    cd build && make rtos
-    # 2) 推上去
-    scp ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin root@192.168.42.1:/root/cvirtos.bin
-    # 3) 板上热更
-    ssh root@192.168.42.1 '/root/lcd_sender rtos /root/cvirtos.bin'
-
-    正常输出:
-      固件 /root/cvirtos.bin: 1640640 字节 = 应用区 1638400 + 常驻跳板 2240 (跳板不重写)
-      小核已停在跳板 (0.0 ms), 开始往 0x8FE00000 写 1638400 字节
-      /dev/mem 写入 + 读回校验通过
-      已置 ctrl.reload=0x484F544A, 等新固件启动...
-      热更完成: 新固件已运行 (state=1, ~200 ms)        <- 退出码 0 = 成功
-
-    验证(隔几秒各读两次, 地址随固件变, 见 4.5):
-      devmem 0x8fe6cb30 32     # [2] 主循环圈数在涨 = 新固件在跑
-      devmem 0x8fe6cb90 32     # [14] 应等于本次固件的 build id
+  1) 板上一条命令:
+       /root/lcd_sender rtos /root/cvirtos.bin
+  2) 完整流程(本机 -> 板子):
+       # 1) 本机重新编译小核固件
+       cd ~/duo-sdk-v2 && source build/envsetup_milkv.sh milkv-duo256m-glibc-arm64-sd
+       cd build && make rtos
+       # 2) 推上去
+       scp ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin root@192.168.42.1:/root/cvirtos.bin
+       # 3) 板上热更
+       ssh root@192.168.42.1 '/root/lcd_sender rtos /root/cvirtos.bin'
+  3) 正常输出:
+       固件 /root/cvirtos.bin: 1640640 字节 = 应用区 1638400 + 常驻跳板 2240 (跳板不重写)
+       小核已停在跳板 (0.0 ms), 开始往 0x8FE00000 写 1638400 字节
+       /dev/mem 写入 + 读回校验通过
+       已置 ctrl.reload=0x484F544A, 等新固件启动...
+       热更完成: 新固件已运行 (state=1, ~200 ms)        <- 退出码 0 = 成功
+  4) 验证(隔几秒各读两次, 地址随固件变, 见 4.5):
+       devmem 0x8fe6cb30 32     # [2] 主循环圈数在涨 = 新固件在跑
+       devmem 0x8fe6cb90 32     # [14] 应等于本次固件的 build id
 
 5.2 内存布局(热更为什么安全)
 --------------------------------------------------------------------------------
-    0x8FE00000 .. 0x8FF90000   小核应用区  (1638400 字节, 热更时原地覆盖)
-    0x8FF90000 .. 0x8FFC0000   常驻热更跳板 .hotjump (约 2 KB, 永不覆盖)
-    0x8FFC0000 ..              LCD 共享内存
-
-    大核只写"应用区", 物理上碰不到跳板和共享内存; 写完还会逐字节读回校验,
-    不符就不放行起跳 —— 最坏只是小核没能重启, 重启板子即回旧固件。
-    跳板执行期间还会做一次全 cache 失效, 防止旧固件的脏 cache 行回写覆盖新固件。
+  1) 0x8FE00000 .. 0x8FF90000   小核应用区  (1638400 字节, 热更时原地覆盖)
+  2) 0x8FF90000 .. 0x8FFC0000   常驻热更跳板 .hotjump (约 2 KB, 永不覆盖)
+  3) 0x8FFC0000 ..              LCD 共享内存
+  4) 大核只写"应用区", 物理上碰不到跳板和共享内存; 写完还会逐字节读回校验,
+     不符就不放行起跳 —— 最坏只是小核没能重启, 重启板子即回旧固件。
+  5) 跳板执行期间还会做一次全 cache 失效, 防止旧固件的脏 cache 行回写覆盖新固件。
 
 5.3 极端情况: 重烧 fip.bin (会重启一次, 慎用!)
 --------------------------------------------------------------------------------
-    仅在如下情况使用:
-      - 常驻跳板本身(hotjump.S)需要修改;
-      - 或热更后小核彻底起不来。
-    # 打包: 以板卡当前 fip 作底, 只替换 BLCP_2ND(小核固件)段
-    python3 ~/duo-sdk-v2/fsbl/plat/cv181x/fiptool.py genfip \
-        --OLD_FIP <板卡当前 fip.bin> \
-        --BLCP_2ND ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
-        <输出的新 fip.bin>
-
-    # 打包后必须先做字节级校验, 确认除 BLCP_2ND 段外其余内容逐字节不变!
-    # 历史: 板卡当前 fip.bin 的 md5 应为 a5a5ca0109d98e238ac82c0aae6d175a
-    # 备份: 板子上历史 fip 备份在 /boot/fip.bin.bak_*
+  1) 仅在如下情况使用:
+       - 常驻跳板本身(hotjump.S)需要修改;
+       - 或热更后小核彻底起不来。
+  2) 打包: 以板卡当前 fip 作底, 只替换 BLCP_2ND(小核固件)段
+       python3 ~/duo-sdk-v2/fsbl/plat/cv181x/fiptool.py genfip \
+           --OLD_FIP <板卡当前 fip.bin> \
+           --BLCP_2ND ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
+           <输出的新 fip.bin>
+  3) ★ 打包后必须先做字节级校验, 确认除 BLCP_2ND 段外其余内容逐字节不变!
+  4) 历史: 板卡当前 fip.bin 的 md5 应为 a5a5ca0109d98e238ac82c0aae6d175a
+  5) 备份: 板子上历史 fip 备份在 /boot/fip.bin.bak_*
 
 ================================================================================
  六、常见故障与排查
@@ -234,395 +231,465 @@
 
 6.1 【必看】热更/通讯报 "No buffer space available"、ping 发不出去
 --------------------------------------------------------------------------------
-  现象:
-    /root/lcd_sender rtos /root/cvirtos.bin
-      -> ioctl RTOS_CMDQU_SEND: No buffer space available
-    或 /root/lcd_sender ping 直接失败; dmesg 里能看到 "No valid mailbox is available"。
-
-  原因: 大小核之间的 IPCM mailbox 一共只有 8 个槽位(物理地址 0x1900400 起, 每槽
-        8 字节)。若大核进程(比如后台的 `lcd_sender mon`)被 kill -9 强杀, 它已经
-        发出、小核也已回复的那条消息就没人接手, 槽位的 linux_valid/rtos_valid 两位
-        会一直停在 1、永不释放。8 个槽位被这种"孤儿回执"占满后, 之后任何发送都会
-        返回 ENOBUFS。这不是固件坏了, 只是邮箱满了。
-
-  修复: 清零 8 个槽位(只腾空邮箱, 不影响正在跑的小核固件):
-    i=0; while [ $i -lt 8 ]; do a=$((0x1900400 + i*8)); devmem $(printf 0x%x $a) 64 0; i=$((i+1)); done
-    然后 /root/lcd_sender ping 应立即恢复正常。
-
-  预防: 停 lcd_sender 优先用 `killall lcd_sender`(发 SIGTERM 让它自己收尾);
-        只有卡死才用 `killall -9 lcd_sender`, 且用完务必先清槽位再热更。
-
-  查看槽位占用(每槽 8 字节, 非 0 即占用; 正常空闲时全 0):
-    devmem 0x1900400 64 ; devmem 0x1900408 64 ; ... ; devmem 0x1900438 64
+  1) 现象:
+       a) /root/lcd_sender rtos /root/cvirtos.bin
+            -> ioctl RTOS_CMDQU_SEND: No buffer space available
+       b) 或 /root/lcd_sender ping 直接失败;
+       c) dmesg 里能看到 "No valid mailbox is available"。
+  2) 原因:
+       a) 大小核之间的 IPCM mailbox 一共只有 8 个槽位(物理地址 0x1900400 起, 每槽 8 字节)。
+       b) 若大核进程(比如后台的 `lcd_sender mon`)被 kill -9 强杀, 它已经发出、小核
+          也已回复的那条消息就没人接手, 槽位的 linux_valid/rtos_valid 两位会一直停在
+          1、永不释放。
+       c) 8 个槽位被这种"孤儿回执"占满后, 之后任何发送都会返回 ENOBUFS。
+       d) 这不是固件坏了, 只是邮箱满了。
+  3) 修复: 清零 8 个槽位(只腾空邮箱, 不影响正在跑的小核固件):
+       i=0; while [ $i -lt 8 ]; do a=$((0x1900400 + i*8)); devmem $(printf 0x%x $a) 64 0; i=$((i+1)); done
+     然后 /root/lcd_sender ping 应立即恢复正常。
+  4) 预防:
+       a) 停 lcd_sender 优先用 `killall lcd_sender`(发 SIGTERM 让它自己收尾);
+       b) 只有卡死才用 `killall -9 lcd_sender`, 且用完务必先清槽位再热更。
+  5) 查看槽位占用(每槽 8 字节, 非 0 即占用; 正常空闲时全 0):
+       devmem 0x1900400 64 ; devmem 0x1900408 64 ; ... ; devmem 0x1900438 64
 
 6.2 小核 sysDMA 自检探针
 --------------------------------------------------------------------------------
-  小核固件启动时会调 sysdma_selftest() 做一次 4096 字节的内存到内存搬运, 用来确认
-  C906L 能否驱动 SoC 的 sysDMA(DesignWare AXI DMAC, 基址 0x04330000)。结果放在
-  g_dma_probe[16](地址用 `nm cvirtos.elf | grep g_dma_probe` 查):
-    devmem 0x8fec4c78 32     # [13] 结果码: 0=成功; 0xE1=控制器不可见; 0xE2=超时;
-                             #      0xE3=数据不对; 0xE5=通道被占
-    devmem 0x8fec4c68 32     # [11] 不一致字节数, 应为 0
-  说明: 借的是 sysDMA 的空闲通道 6(大核 dw_dmac 正在用 0..3), 且不碰全局 RESET/CFG,
-        与 Linux 侧共存。小核读 DMAC_ID 恒为 0(本 SoC 如此), 存在性要看 DMAC_COMPVER。
+  1) 小核固件启动时会调 sysdma_selftest() 做一次 4096 字节的内存到内存搬运, 用来确认
+     C906L 能否驱动 SoC 的 sysDMA(DesignWare AXI DMAC, 基址 0x04330000)。
+  2) 结果放在 g_dma_probe[16](地址用 `nm cvirtos.elf | grep g_dma_probe` 查):
+       devmem 0x8fec4c78 32     # [13] 结果码: 0=成功; 0xE1=控制器不可见; 0xE2=超时;
+                                #      0xE3=数据不对; 0xE5=通道被占
+       devmem 0x8fec4c68 32     # [11] 不一致字节数, 应为 0
+  3) 说明: 借的是 sysDMA 的空闲通道 6(大核 dw_dmac 正在用 0..3), 且不碰全局 RESET/CFG,
+           与 Linux 侧共存。
+  4) 说明: 小核读 DMAC_ID 恒为 0(本 SoC 如此), 存在性要看 DMAC_COMPVER。
 
 6.3 【编译坑】改了源码, 热更后行为却没变
 --------------------------------------------------------------------------------
-  现象: 明明改了 .c 文件, 编译也过了, 热更后固件行为还是旧的(探针数值不变)。
-  原因: `make rtos` 对已存在的 .obj 有时不重编(陈旧对象被直接复用)。注意: 顶层
-        `~/duo-sdk-v2/build` 只是转调, 真正的对象树在 ~/duo-sdk-v2/freertos/cvitek/build/。
-  处理: 删掉对应 .obj 和 libcomm.a 再编, 例如:
-    cd ~/duo-sdk-v2/freertos/cvitek/build
-    rm -f task/comm/CMakeFiles/comm.dir/src/riscv64/<文件名>.c.obj task/comm/libcomm.a
-    cd ~/duo-sdk-v2/build && make rtos
-
-  ★ 更省事的做法(只重编改动的那一层, 实测可靠):
-    对象路径规律是 <子目录>/CMakeFiles/<目标>.dir/<源文件>.c.obj, 例如改 lvgl_task.c:
-    cd ~/duo-sdk-v2/freertos/cvitek/build/task
-    rm -f lvgl/CMakeFiles/lvgl.dir/lvgl_task.c.obj
-    cmake --build . --target install && cmake --build . --target cvirtos.bin
-    # 产物: ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin
-  验证: 用反汇编确认新代码确实进了 ELF(把 <函数名>/<特征立即数> 换成你自己的):
-    ~/duo-sdk-v2/host-tools/gcc/riscv64-elf-x86_64/bin/riscv64-unknown-elf-objdump \
-        -d --disassemble=<函数名> ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.elf \
-        | grep -i <特征立即数>
+  1) 现象: 明明改了 .c 文件, 编译也过了, 热更后固件行为还是旧的(探针数值不变)。
+  2) 原因: `make rtos` 对已存在的 .obj 有时不重编(陈旧对象被直接复用)。
+           注意: 顶层 `~/duo-sdk-v2/build` 只是转调, 真正的对象树在
+           ~/duo-sdk-v2/freertos/cvitek/build/。
+  3) 处理: 删掉对应 .obj 和 libcomm.a 再编, 例如:
+       cd ~/duo-sdk-v2/freertos/cvitek/build
+       rm -f task/comm/CMakeFiles/comm.dir/src/riscv64/<文件名>.c.obj task/comm/libcomm.a
+       cd ~/duo-sdk-v2/build && make rtos
+  4) ★ 更省事的做法(只重编改动的那一层, 实测可靠):
+     对象路径规律是 <子目录>/CMakeFiles/<目标>.dir/<源文件>.c.obj, 例如改 lvgl_task.c:
+       cd ~/duo-sdk-v2/freertos/cvitek/build/task
+       rm -f lvgl/CMakeFiles/lvgl.dir/lvgl_task.c.obj
+       cmake --build . --target install && cmake --build . --target cvirtos.bin
+       # 产物: ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin
+  5) 验证: 用反汇编确认新代码确实进了 ELF(把 <函数名>/<特征立即数> 换成你自己的):
+       ~/duo-sdk-v2/host-tools/gcc/riscv64-elf-x86_64/bin/riscv64-unknown-elf-objdump \
+           -d --disassemble=<函数名> ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.elf \
+           | grep -i <特征立即数>
 
 6.4 小核 SPI2 送显-DMA 探针
 --------------------------------------------------------------------------------
-  小核刷屏的 spi2_write_dma() 每搬一块数据就把统计写进 g_spi2_probe[8]
-  (地址用 `nm cvirtos.elf | grep g_spi2_probe` 查; build id 0x484A0004 对应 0x8fec8140)。
-  第 n 项的地址 = 基址 + n*8:
-    devmem 0x8fec8140 32     # [0] 魔数 'SDM2' (0x53444D32), 不匹配说明地址过期
-    devmem 0x8fec8148 32     # [1] DMA 调用次数 (隔几秒读两次, 在涨 = 确实在走 DMA)
-    devmem 0x8fec8150 32     # [2] DMA 累计字节数
-    devmem 0x8fec8158 32     # [3] 最近一次返回码 0 = 成功 (非 0 见 6.5)
-    devmem 0x8fec8160 32     # [4] SPI FIFO 深度(实测 16)
-    devmem 0x8fec8168 32     # [5] ★ DMA 失败回退 PIO 的次数, 0 = SPI2 送显已全程走 DMA
-    devmem 0x8fec8170 32     # [6] 写进 DMATDLR 的水位(8)
-    devmem 0x8fec8178 32     # [7] 目的端 MSIZE 编码(2 = 一次 8 项)
-  判据: [5]==0 且 [3]==0 即 DMA 通路完全生效, 一次都没退回逐字节轮询。
-  参考寄存器(基址 0x04330000 的 sysDMA, 小核借的是通道 7):
-    devmem 0x04330820 64     # ch7 CFG: 正常应含 SRC_PER=DST_PER=5 (5 = SPI2_TX 请求线)
-    devmem 0x04330018 64     # ch7 CH_EN: 刷新期间读到 bit7=1(0x80) 是正常的(正在搬);
-                             #           长时间空闲时若仍为 1, 说明通道卡住, 需查 6.5
+  1) 小核刷屏的 spi2_write_dma() 每搬一块数据就把统计写进 g_spi2_probe[8]
+     (地址用 `nm cvirtos.elf | grep g_spi2_probe` 查; build id 0x484A0004 对应 0x8fec8140)。
+  2) 第 n 项的地址 = 基址 + n*8:
+       devmem 0x8fec8140 32     # [0] 魔数 'SDM2' (0x53444D32), 不匹配说明地址过期
+       devmem 0x8fec8148 32     # [1] DMA 调用次数 (隔几秒读两次, 在涨 = 确实在走 DMA)
+       devmem 0x8fec8150 32     # [2] DMA 累计字节数
+       devmem 0x8fec8158 32     # [3] 最近一次返回码 0 = 成功 (非 0 见 6.5)
+       devmem 0x8fec8160 32     # [4] SPI FIFO 深度(实测 16)
+       devmem 0x8fec8168 32     # [5] ★ DMA 失败回退 PIO 的次数, 0 = SPI2 送显已全程走 DMA
+       devmem 0x8fec8170 32     # [6] 写进 DMATDLR 的水位(8)
+       devmem 0x8fec8178 32     # [7] 目的端 MSIZE 编码(2 = 一次 8 项)
+  3) 判据: [5]==0 且 [3]==0 即 DMA 通路完全生效, 一次都没退回逐字节轮询。
+  4) 参考寄存器(基址 0x04330000 的 sysDMA, 小核借的是通道 7):
+       devmem 0x04330820 64     # ch7 CFG: 正常应含 SRC_PER=DST_PER=5 (5 = SPI2_TX 请求线)
+       devmem 0x04330018 64     # ch7 CH_EN: 刷新期间读到 bit7=1(0x80) 是正常的(正在搬);
+                                #           长时间空闲时若仍为 1, 说明通道卡住, 需查 6.5
 
 6.5 【重要】SPI2 送显 DMA 不生效(DMA 一次都没搬成)
 --------------------------------------------------------------------------------
-  现象: g_spi2_probe[1](DMA 次数) 不涨、[5](回退 PIO 次数) 一直涨、[3] 非 0;
-        ch7 CH_EN(0x04330018) 的 bit7 恒为 1、BLOCK_TS 不动 —— 通道"已使能、等握手"卡死。
-  根因(已修): SPI2 的 DMA 请求线映射必须对。板级 DTS 写的是
-        dmas = <&dmac 4 1 1>   /* rx: SPI2_RX */
-               <&dmac 5 1 1>;  /* tx: SPI2_TX */
-    即 4 = SPI2_RX、5 = SPI2_TX。送显只发不收, 请求线必须用 5;
-    若误填 4, TX-only 时 RX FIFO 永不进数据, 请求线永不置起, 通道就永远卡在等握手。
-  自查: 板子上 `cat /proc/device-tree/sysdma_remap/ch-remap` 应看到
-        槽位 4=0x14(=20=CVI_SPI2_RX)、槽位 5=0x15(=21=CVI_SPI2_TX)。
-  另外: 启动 DMA 前要先"中止"可能残留的脏通道(CH_EN 的 ABORT 位在 bit32, 写使能在 bit40),
-        只有中止不掉才判"通道被占"(返回 0xE5)。
+  1) 现象:
+       a) g_spi2_probe[1](DMA 次数) 不涨;
+       b) [5](回退 PIO 次数) 一直涨;
+       c) [3] 非 0;
+       d) ch7 CH_EN(0x04330018) 的 bit7 恒为 1、BLOCK_TS 不动 —— 通道"已使能、等握手"卡死。
+  2) 根因(已修): SPI2 的 DMA 请求线映射必须对。板级 DTS 写的是
+       dmas = <&dmac 4 1 1>   /* rx: SPI2_RX */
+              <&dmac 5 1 1>;  /* tx: SPI2_TX */
+     即 4 = SPI2_RX、5 = SPI2_TX。送显只发不收, 请求线必须用 5;
+     若误填 4, TX-only 时 RX FIFO 永不进数据, 请求线永不置起, 通道就永远卡在等握手。
+  3) 自查: 板子上 `cat /proc/device-tree/sysdma_remap/ch-remap` 应看到
+           槽位 4=0x14(=20=CVI_SPI2_RX)、槽位 5=0x15(=21=CVI_SPI2_TX)。
+  4) 另外: 启动 DMA 前要先"中止"可能残留的脏通道(CH_EN 的 ABORT 位在 bit32,
+           写使能在 bit40), 只有中止不掉才判"通道被占"(返回 0xE5)。
 
 ================================================================================
  七、GitHub 仓库 —— 本工程的备份与分发
 ================================================================================
-【地址】https://github.com/ewfgwae/milkvduo256m    (public, 默认分支 main)
-
-【本地仓库位置(PC)】
-  d:\ruanjian\installation package\duo-examples-main\duo-examples-main\duo256m-lcd-rtos
-
-【仓库里有什么】
-  image/            整卡镜像(gzip 后按 70MB 分卷) + CHECKSUMS.txt
-  sdcard/           可直接覆盖进 SD 卡的文件, 按分区结构摆好:
-                      boot/   -> FAT 分区(p1)
-                      rootfs/ -> ext4 分区(p2)
-  src/sdk_overlay/  SDK 的改动, 按 duo-sdk-v2 的相对路径存放
-  src/big_core/     大核程序源码 lcd_sender.c + lcd_shm.h
-  src/examples/     大核用户态例子 st7789/ 与 lvgl_port/
-  tools/            一键脚本: apply_sdk_overlay.sh / build_small_core.sh /
-                    build_big_core.sh / deploy.sh
-  README.md         硬件接线、写卡、增量覆盖、编译、运行、排障
-
-【三种用法】
-  1. 重做一张卡 : 合并分卷 -> 校验 md5 -> 写卡(balenaEtcher 或 dd)
-  2. 增量升级   : 把 sdcard/ 里对应文件覆盖到卡的两个分区
-  3. 从源码重建 : tools/apply_sdk_overlay.sh 覆盖 SDK -> 编小核/大核 -> deploy.sh 热更
-
-【推送流程(本次实际走的)】
-  cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
-  git remote add origin https://github.com/ewfgwae/milkvduo256m.git
-  git -c http.proxy= -c https.proxy= \
-      push https://x-access-token:<你的token>@github.com/ewfgwae/milkvduo256m.git main
-  ★ 本机 git 全局配了 socks5 代理(127.0.0.1:10808), WSL 里连不上, 所以要把代理置空。
-  ★ token 必须勾选 classic 的 repo 大项; 空的 scope 会返回 HTTP 403。
+  1) 【地址】https://github.com/ewfgwae/milkvduo256m    (public, 默认分支 main)
+  2) 【本地仓库位置(PC)】
+       d:\ruanjian\installation package\duo-examples-main\duo-examples-main\duo256m-lcd-rtos
+  3) 【仓库里有什么】
+       a) image/            整卡镜像(gzip 后按 70MB 分卷) + CHECKSUMS.txt
+       b) sdcard/           可直接覆盖进 SD 卡的文件, 按分区结构摆好:
+                              boot/   -> FAT 分区(p1)
+                              rootfs/ -> ext4 分区(p2)
+       c) src/sdk_overlay/  SDK 的改动, 按 duo-sdk-v2 的相对路径存放
+       d) src/big_core/     大核程序源码 lcd_sender.c + lcd_shm.h
+       e) src/examples/     大核用户态例子 st7789/ 与 lvgl_port/
+       f) tools/            一键脚本: apply_sdk_overlay.sh / build_small_core.sh /
+                            build_big_core.sh / deploy.sh
+       g) README.md         硬件接线、写卡、增量覆盖、编译、运行、排障
+  4) 【三种用法】
+       a) 重做一张卡 : 合并分卷 -> 校验 md5 -> 写卡(balenaEtcher 或 dd)
+       b) 增量升级   : 把 sdcard/ 里对应文件覆盖到卡的两个分区
+       c) 从源码重建 : tools/apply_sdk_overlay.sh 覆盖 SDK -> 编小核/大核 -> deploy.sh 热更
+  5) 【推送流程(本次实际走的)】
+       cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
+       git remote add origin https://github.com/ewfgwae/milkvduo256m.git
+       git -c http.proxy= -c https.proxy= \
+           push https://x-access-token:<你的token>@github.com/ewfgwae/milkvduo256m.git main
+       ★ 本机 git 全局配了 socks5 代理(127.0.0.1:10808), WSL 里连不上, 所以要把代理置空。
+       ★ token 必须勾选 classic 的 repo 大项; 空的 scope 会返回 HTTP 403。
 
 ================================================================================
- 八、变更记录 (后来者请往下追加)
+ 八、变更记录  (后来者请往下追加)
 ================================================================================
-格式: YYYY-MM-DD HH:MM | 改动人 | 改了什么 | 完整指令 | 结果
-      取不到准确分钟时间的旧记录, 只写日期即可。
-
-2026-09-28 | (本会话) | Step0 排雷: 小核新增 sysdma_test.c, 启动时做一次 sysDMA
-    内存到内存搬运自检, 结果写 g_dma_probe[16] (走热更部署, 零风险) |
-    cd ~/duo-sdk-v2 && source build/envsetup_milkv.sh milkv-duo256m-glibc-arm64-sd
-    cd build && make rtos
-    scp ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin root@192.168.42.1:/root/cvirtos.bin
-    ssh root@192.168.42.1 '/root/lcd_sender rtos /root/cvirtos.bin' |
-    结果: build id 0x484A0003; g_dma_probe[13](结果码)=0、[11](不一致字节数)=0,
-    即小核能完整驱动 sysDMA(借空闲通道 6, 不动 Linux dw_dmac)。fip 未动、系统未重启。
-    注意: 探针地址随之变化, g_lvgl_probe=0x8fe6c660、g_dma_probe=0x8fec4750。
-
-2026-09-28 | (本会话) | 记两处排障经验: IPCM 8 槽位耗尽导致 ENOBUFS(见 6.1);
-    make rtos 复用陈旧对象导致改完不生效(见 6.3) |
-    i=0; while [ $i -lt 8 ]; do a=$((0x1900400 + i*8)); devmem $(printf 0x%x $a) 64 0; i=$((i+1)); done |
-    清槽位后 ping/热更立即恢复。
-
-2026-09-28 | (前人) | 小核固件更新改为"常驻跳板 + 原地覆盖"热更, 从此免烧 fip、免重启 |
-    /root/lcd_sender rtos /root/cvirtos.bin |
-    验证通过: 换 build id 0x484A0001 的新固件热更成功,
-    探针 probe[2] 圈数增长、probe[7] = 44.7 FPS, fip 未动、系统未重启。
-
-2026-09-28 | (本会话) | Step1 修复: "SPI2 送显挂 sysDMA"之前完全没生效。根因是 DMA 请求线
-    填错 —— 板级 DTS 写明 4=SPI2_RX、5=SPI2_TX, 送显只发不收, 必须用 5; 误填 4 会让通道
-    永远卡在"已使能、等握手"。另加了"启动前先中止脏通道"(CH_EN 的 ABORT 位=32, 写使能=40),
-    并按内核 slave_sg(M2P) 路径重配 CTL(删掉照 cyclic 误抄的 ARLEN/AWLEN)。
-    改动: 小核 driver/spi/src/spi.c; task/lvgl/lvgl_task.c 仅把 build id +1 (0x484A0003 ->
-    0x484A0004, 遵守"每改一版 +1"的约定)。详见 6.4 / 6.5 |
-    # 1) 增量编译小核(先删旧 .obj, 见 6.3)
-    cd /home/chen/duo-sdk-v2/freertos/cvitek/build/task && \
-        rm -f lvgl/CMakeFiles/lvgl.dir/lvgl_task.c.obj && \
-        cmake --build . --target install && cmake --build . --target cvirtos.bin
-    # 2) 推到板子
-    scp /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
-        root@192.168.42.1:/root/cvirtos.bin
-    # 3) 板上: 先清 8 个 IPCM 槽位(见 6.1), 再热更
-    i=0; while [ $i -lt 8 ]; do devmem $((0x1900400 + i*8)) 64 0; i=$((i+1)); done
-    /root/lcd_sender ping
-    /root/lcd_sender rtos /root/cvirtos.bin
-    # 4) 验证
-    devmem 0x8fe6cb90 32     # [14] build id 应 = 0x484A0004
-    devmem 0x8fec8140 32     # [0]  应 = 0x53444D32 ('SDM2')
-    devmem 0x8fec8158 32     # [3]  返回码应 = 0
-    devmem 0x8fec8168 32     # [5]  回退 PIO 次数应 = 0
-    devmem 0x04330820 64     # ch7 CFG 应含 SRC_PER=DST_PER=5
-    |
-    结果: 热更 200.1 ms、退出码 0; build id 读回 0x484A0004; g_spi2_probe[5]=0、[3]=0、
-    [1](DMA 次数) 4 秒内 561 -> 1965 持续增长; ch7 CFG=0x7F8052810000000F(SRC_PER=DST_PER=5)。
-    即 SPI2 送显已 100% 走 sysDMA、零 PIO 回退。fip 未动、系统未重启。
-    本版探针地址: g_lvgl_probe=0x8fe6cb20, g_spi2_probe=0x8fec8140, g_dma_probe=0x8fec4c10。
-    本版固件: 1640640 字节, md5=b63ef15c6ecbe0ea59121e4853824eec;
-    常驻跳板末 2240 字节 md5=205ead534d848aea08b4e4cf2a03a8f1(与上一版逐字节相同 -> 热更安全)。
-
-2026-09-28 | (本会话) | Step2 修复: 【帧率 1~2 FPS】。加完 sysDMA 送显后帧率反而从 ~44 掉到 1~2。
-    根因: sysdma_wait_done() 只认 CH_INTSTATUS 的中断位, 但 DW DMAC 搬完后该中断位
-    实测约 35% 概率读不到(硬件其实已经收摊: DMAC_CH_EN 的通道位自清 + CH_LLP 已到链尾 0),
-    于是成功的搬运被误判为超时, 每次白等满 guard(实测单次 720ms)。实测 1292 次送显中 840 次
-    "超时"。修法: 判据两条并用 —— 中断位【或】(CH_EN 通道位=0 且 CH_LLP=0); guard 从
-    8000000 降到 2000000; 另加"连续 3 次真超时就把送显熔断回退 PIO"的保险(避免最坏情况卡死)。
-    改动: 小核 driver/spi/src/spi.c; task/lvgl/lvgl_task.c 仅把 build id 0x484A0007 ->
-    0x484A0008(遵守"每改一版 +1"的约定)。 |
-    # 1) 增量编译小核(先删旧 .obj, 见 6.3)
-    cd /home/chen/duo-sdk-v2/freertos/cvitek/build/task && \
-        rm -f lvgl/CMakeFiles/lvgl.dir/lvgl_task.c.obj && \
-        rm -f ../driver/CMakeFiles/spi.dir/src/spi.c.obj && \
-        cmake --build . --target install && cmake --build . --target cvirtos.bin
-    # 2) 推到板子
-    scp /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
-        root@192.168.42.1:/root/cvirtos.bin
-    # 3) 板上: 先清 8 个 IPCM 槽位(见 6.1), 再热更
-    i=0; while [ $i -lt 8 ]; do devmem $((0x1900400 + i*8)) 64 0; i=$((i+1)); done
-    /root/lcd_sender rtos /root/cvirtos.bin
-    # 4) 验证
-    devmem 0x8fe6ce90 32     # [14] build id 应 = 0x484A0008
-    devmem 0x8fe6ce58 32     # [7]  帧率 x10, 应 ~0x33A (=826 -> 82.6 FPS)
-    devmem 0x8fec3958 32     # g_dma2_probe[3] 真超时次数, 应 = 0
-    devmem 0x8fec3a08 32     # g_dma2_probe[25] 单次最长等待 us, 修前 720315, 修后 ~13858
-    |
-    结果: 热更 200.1 ms、退出码 0; build id 读回 0x484A0008; fps_x10=0x33A(82.6 FPS)、
-    4 秒内帧数 699 -> 1019; tmoN=0、maxdt 从 720315us 降到 13858us。fip 未动、系统未重启。
-    本版探针地址: g_lvgl_probe=0x8fe6ce20, g_dma2_probe=0x8fec3940, g_spi2_probe=0x8fec3a20;
-    常用偏移: buildid +0x70、fps_x10 +0x38、frames +0x40、cpu_small +0x20、loop +0x10;
-    tmoN=g_dma2_probe+0x18、[24]=+0xc0、maxdt=+0xc8; dmaN=g_spi2_probe+0x08、rc=+0x18、
-    回退N=+0x28。
-    本版固件: 1640640 字节, md5=a921a56507a896960e6dded0aa0d7887(应用区 1638400 + 跳板 2240)。
-
-2026-09-28 | (本会话) | 打包: 本工程全部落成可复现的 SD 卡镜像与源码仓库(仓库名 duo256m-lcd-rtos)。
-    板上新增 /mnt/data/{auto.sh, cvirtos.bin, lcd_sender} 三个文件实现"开机自动热更小核
-    固件 + 起 CPU 监控"; /etc/init.d/S99user 未改(原厂脚本本来就会调 $USERDATAPATH/auto.sh)。
-    注意 /mnt/data/lcd_sender 必须与 /root/lcd_sender 同版本 —— 旧版没有 rtos 子命令,
-    auto.sh 会打 "未知子命令: rtos" 并跳过热更(不影响启动, 只是屏幕跑的是 fip 里那版)。 |
-    cp -f /root/lcd_sender /mnt/data/lcd_sender
-    ls -l /boot/fip.bin /boot/boot.sd /mnt/data/auto.sh /mnt/data/cvirtos.bin /mnt/data/lcd_sender
-    md5sum /boot/fip.bin /boot/boot.sd /mnt/data/auto.sh /mnt/data/lcd_sender /mnt/data/cvirtos.bin |
-    结果: 板上 md5 —— fip.bin=a5a5ca0109d98e238ac82c0aae6d175a(1928192, 与历史记录一致)、
-    boot.sd=7dd5a251414c10172e42a644f7177666(3338772)、auto.sh=d2f2084b8933889af89d801803978090、
-    lcd_sender=2fcfe334988a4d578eb472978b3ddbee(5053208)、cvirtos.bin=a921a56507a896960e6dded0aa0d7887。
-    整卡镜像(前 897 MiB, 含 MBR + p1 FAT 128M + p2 ext4 768M)见仓库 image/。
-
-2026-09-28 | (本会话) | 验证: 重启板子, 确认"开机自动热更 + 起监控"这条链路真的通。
-    做法: 板上 sync; reboot 后等 SSH 恢复, 再查 reload 日志、进程、小核探针。 |
-    sync; reboot
-    # 等约 40 秒后:
-    cat /tmp/lcd_reload.log
-    ps | grep lcd_sender
-    devmem 0x8fe6ce20 32     # [0] 'LVGL' 魔数
-    devmem 0x8fe6ce90 32     # [14] build id 应 = 0x484A0008
-    devmem 0x8fe6ce58 32     # [7] 帧率 x10
-    |
-    结果: uptime=0:01(确实重启过); /tmp/lcd_reload.log 完整 ——
-      "固件 /mnt/data/cvirtos.bin: 1640640 字节 = 应用区 1638400 + 常驻跳板 2240"
-      "/dev/mem 写入 + 读回校验通过"
-      "热更完成: 新固件已运行 (state=1, 200.1 ms)"
-    进程 279 root /mnt/data/lcd_sender mon 1000 在跑; 小核 build id=0x484A0008、tmoN=0、PIO=0、
-    frames 持续增长、fps_x10=0x4CC(122.8 FPS, 跑分动态场景)、cpu_sml=0x10/0x11(16~17%)。
-    即: 拔电重插(SD 卡启动)后无需任何人工操作, 屏幕自动进入 LVGL 跑分 + OSD 监控。
+【每条记录的格式】
+  ─────────────────────────────────────────────────────────────────────────────
+  YYYY-MM-DD HH:MM | 改动人 | 一句话标题
+  ─────────────────────────────────────────────────────────────────────────────
+    1) 做了什么 / 为什么:
+    2) 完整命令(可直接复制执行):
+    3) 结果 / 验证:
+    4) 教训(可选):
+【时间要求】精确到分钟(UTC+8); 旧的、确实取不到分钟时间的记录, 只写日期即可。
+                                     ——— 以下按时间先后排列 ———
 
 --------------------------------------------------------------------------------
-2026-09-28 06:45 起 —— 打包上传 GitHub(时间取自 git 提交时间、文件 mtime 与命令输出)
-以下条目时间精确到分钟(UTC+8); 上面几条旧记录取不到准确时间, 故只写日期。
+2026-09-28 | (本会话) | Step0 排雷: 小核 sysDMA 内存到内存搬运自检
+--------------------------------------------------------------------------------
+  1) 做了什么: 小核新增 sysdma_test.c, 启动时做一次 sysDMA 内存到内存搬运自检,
+     结果写 g_dma_probe[16]。(走热更部署, 零风险)
+  2) 完整命令:
+       cd ~/duo-sdk-v2 && source build/envsetup_milkv.sh milkv-duo256m-glibc-arm64-sd
+       cd build && make rtos
+       scp ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin root@192.168.42.1:/root/cvirtos.bin
+       ssh root@192.168.42.1 '/root/lcd_sender rtos /root/cvirtos.bin'
+  3) 结果: build id 0x484A0003; g_dma_probe[13](结果码)=0、[11](不一致字节数)=0,
+     即小核能完整驱动 sysDMA(借空闲通道 6, 不动 Linux dw_dmac)。fip 未动、系统未重启。
+  4) 注意: 探针地址随之变化, g_lvgl_probe=0x8fe6c660、g_dma_probe=0x8fec4750。
+
+--------------------------------------------------------------------------------
+2026-09-28 | (本会话) | 记两处排障经验: IPCM 8 槽位耗尽(见 6.1) / make rtos 陈旧对象(见 6.3)
+--------------------------------------------------------------------------------
+  1) 做了什么: 把两条踩过的坑写进"六、常见故障与排查"。
+  2) 完整命令(清槽位):
+       i=0; while [ $i -lt 8 ]; do a=$((0x1900400 + i*8)); devmem $(printf 0x%x $a) 64 0; i=$((i+1)); done
+  3) 结果: 清槽位后 ping/热更立即恢复。
+  4) 教训: 见 6.1 / 6.3 正文。
+
+--------------------------------------------------------------------------------
+2026-09-28 | (前人) | 小核固件更新改为"常驻跳板 + 原地覆盖"热更, 从此免烧 fip、免重启
+--------------------------------------------------------------------------------
+  1) 做了什么: 在小核地址空间尾部留一块 .hotjump 常驻跳板, 大核只覆盖应用区。
+  2) 完整命令:
+       /root/lcd_sender rtos /root/cvirtos.bin
+  3) 结果: 验证通过 —— 换 build id 0x484A0001 的新固件热更成功,
+     探针 probe[2] 圈数增长、probe[7] = 44.7 FPS, fip 未动、系统未重启。
+
+--------------------------------------------------------------------------------
+2026-09-28 | (本会话) | Step1 修复: "SPI2 送显挂 sysDMA"之前完全没生效
+--------------------------------------------------------------------------------
+  1) 做了什么: 修正 DMA 请求线 —— 板级 DTS 写明 4=SPI2_RX、5=SPI2_TX, 送显只发不收,
+     必须用 5; 误填 4 会让通道永远卡在"已使能、等握手"。
+  2) 做了什么: 另加"启动前先中止脏通道"(CH_EN 的 ABORT 位=32, 写使能=40);
+     并按内核 slave_sg(M2P) 路径重配 CTL(删掉照 cyclic 误抄的 ARLEN/AWLEN)。
+  3) 改动文件: 小核 driver/spi/src/spi.c; task/lvgl/lvgl_task.c 仅把 build id +1
+     (0x484A0003 -> 0x484A0004, 遵守"每改一版 +1"的约定)。详见 6.4 / 6.5。
+  4) 完整命令:
+       # 1) 增量编译小核(先删旧 .obj, 见 6.3)
+       cd /home/chen/duo-sdk-v2/freertos/cvitek/build/task && \
+           rm -f lvgl/CMakeFiles/lvgl.dir/lvgl_task.c.obj && \
+           cmake --build . --target install && cmake --build . --target cvirtos.bin
+       # 2) 推到板子
+       scp /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
+           root@192.168.42.1:/root/cvirtos.bin
+       # 3) 板上: 先清 8 个 IPCM 槽位(见 6.1), 再热更
+       i=0; while [ $i -lt 8 ]; do devmem $((0x1900400 + i*8)) 64 0; i=$((i+1)); done
+       /root/lcd_sender ping
+       /root/lcd_sender rtos /root/cvirtos.bin
+       # 4) 验证
+       devmem 0x8fe6cb90 32     # [14] build id 应 = 0x484A0004
+       devmem 0x8fec8140 32     # [0]  应 = 0x53444D32 ('SDM2')
+       devmem 0x8fec8158 32     # [3]  返回码应 = 0
+       devmem 0x8fec8168 32     # [5]  回退 PIO 次数应 = 0
+       devmem 0x04330820 64     # ch7 CFG 应含 SRC_PER=DST_PER=5
+  5) 结果: 热更 200.1 ms、退出码 0; build id 读回 0x484A0004; g_spi2_probe[5]=0、[3]=0、
+     [1](DMA 次数) 4 秒内 561 -> 1965 持续增长; ch7 CFG=0x7F8052810000000F(SRC_PER=DST_PER=5)。
+     即 SPI2 送显已 100% 走 sysDMA、零 PIO 回退。fip 未动、系统未重启。
+  6) 本版探针地址: g_lvgl_probe=0x8fe6cb20, g_spi2_probe=0x8fec8140, g_dma_probe=0x8fec4c10。
+  7) 本版固件: 1640640 字节, md5=b63ef15c6ecbe0ea59121e4853824eec;
+     常驻跳板末 2240 字节 md5=205ead534d848aea08b4e4cf2a03a8f1(与上一版逐字节相同 -> 热更安全)。
+
+--------------------------------------------------------------------------------
+2026-09-28 | (本会话) | Step2 修复: 【帧率 1~2 FPS】
+--------------------------------------------------------------------------------
+  1) 做了什么: 修 sysdma_wait_done() 的完成判据 —— 原来只认 CH_INTSTATUS 的中断位。
+  2) 根因: DW DMAC 搬完后该中断位实测约 35% 概率读不到(硬件其实已经收摊:
+     DMAC_CH_EN 的通道位自清 + CH_LLP 已到链尾 0), 于是成功的搬运被误判为超时,
+     每次白等满 guard(实测单次 720ms)。实测 1292 次送显中 840 次"超时"。
+  3) 修法: 判据两条并用 —— 中断位【或】(CH_EN 通道位=0 且 CH_LLP=0); guard 从
+     8000000 降到 2000000; 另加"连续 3 次真超时就把送显熔断回退 PIO"的保险。
+  4) 改动文件: 小核 driver/spi/src/spi.c; task/lvgl/lvgl_task.c 仅把 build id
+     0x484A0007 -> 0x484A0008(遵守"每改一版 +1"的约定)。
+  5) 完整命令:
+       # 1) 增量编译小核(先删旧 .obj, 见 6.3)
+       cd /home/chen/duo-sdk-v2/freertos/cvitek/build/task && \
+           rm -f lvgl/CMakeFiles/lvgl.dir/lvgl_task.c.obj && \
+           rm -f ../driver/CMakeFiles/spi.dir/src/spi.c.obj && \
+           cmake --build . --target install && cmake --build . --target cvirtos.bin
+       # 2) 推到板子
+       scp /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
+           root@192.168.42.1:/root/cvirtos.bin
+       # 3) 板上: 先清 8 个 IPCM 槽位(见 6.1), 再热更
+       i=0; while [ $i -lt 8 ]; do devmem $((0x1900400 + i*8)) 64 0; i=$((i+1)); done
+       /root/lcd_sender rtos /root/cvirtos.bin
+       # 4) 验证
+       devmem 0x8fe6ce90 32     # [14] build id 应 = 0x484A0008
+       devmem 0x8fe6ce58 32     # [7]  帧率 x10, 应 ~0x33A (=826 -> 82.6 FPS)
+       devmem 0x8fec3958 32     # g_dma2_probe[3] 真超时次数, 应 = 0
+       devmem 0x8fec3a08 32     # g_dma2_probe[25] 单次最长等待 us, 修前 720315, 修后 ~13858
+  6) 结果: 热更 200.1 ms、退出码 0; build id 读回 0x484A0008; fps_x10=0x33A(82.6 FPS)、
+     4 秒内帧数 699 -> 1019; tmoN=0、maxdt 从 720315us 降到 13858us。fip 未动、系统未重启。
+  7) 本版探针地址: g_lvgl_probe=0x8fe6ce20, g_dma2_probe=0x8fec3940, g_spi2_probe=0x8fec3a20;
+     常用偏移: buildid +0x70、fps_x10 +0x38、frames +0x40、cpu_small +0x20、loop +0x10;
+     tmoN=g_dma2_probe+0x18、[24]=+0xc0、maxdt=+0xc8; dmaN=g_spi2_probe+0x08、rc=+0x18、
+     回退N=+0x28。
+  8) 本版固件: 1640640 字节, md5=a921a56507a896960e6dded0aa0d7887(应用区 1638400 + 跳板 2240)。
+
+--------------------------------------------------------------------------------
+2026-09-28 | (本会话) | 打包: 全部落成可复现的 SD 卡镜像与源码仓库
+--------------------------------------------------------------------------------
+  1) 做了什么: 把本工程全部落成可复现的 SD 卡镜像与源码仓库(仓库名 duo256m-lcd-rtos)。
+     板上新增 /mnt/data/{auto.sh, cvirtos.bin, lcd_sender} 三个文件实现"开机自动热更
+     小核固件 + 起 CPU 监控"; /etc/init.d/S99user 未改(原厂脚本本来就会调
+     $USERDATAPATH/auto.sh)。
+  2) 注意: /mnt/data/lcd_sender 必须与 /root/lcd_sender 同版本 —— 旧版没有 rtos 子命令,
+     auto.sh 会打 "未知子命令: rtos" 并跳过热更(不影响启动, 只是屏幕跑的是 fip 里那版)。
+  3) 完整命令:
+       cp -f /root/lcd_sender /mnt/data/lcd_sender
+       ls -l /boot/fip.bin /boot/boot.sd /mnt/data/auto.sh /mnt/data/cvirtos.bin /mnt/data/lcd_sender
+       md5sum /boot/fip.bin /boot/boot.sd /mnt/data/auto.sh /mnt/data/lcd_sender /mnt/data/cvirtos.bin
+  4) 结果: 板上 md5 —— fip.bin=a5a5ca0109d98e238ac82c0aae6d175a(1928192, 与历史记录一致)、
+     boot.sd=7dd5a251414c10172e42a644f7177666(3338772)、auto.sh=d2f2084b8933889af89d801803978090、
+     lcd_sender=2fcfe334988a4d578eb472978b3ddbee(5053208)、cvirtos.bin=a921a56507a896960e6dded0aa0d7887。
+  5) 结果: 整卡镜像(前 897 MiB, 含 MBR + p1 FAT 128M + p2 ext4 768M)见仓库 image/。
+
+--------------------------------------------------------------------------------
+2026-09-28 | (本会话) | 验证: 重启板子, 确认"开机自动热更 + 起监控"链路真通
+--------------------------------------------------------------------------------
+  1) 做了什么: 板上 sync; reboot 后等 SSH 恢复, 再查 reload 日志、进程、小核探针。
+  2) 完整命令:
+       sync; reboot
+       # 等约 40 秒后:
+       cat /tmp/lcd_reload.log
+       ps | grep lcd_sender
+       devmem 0x8fe6ce20 32     # [0] 'LVGL' 魔数
+       devmem 0x8fe6ce90 32     # [14] build id 应 = 0x484A0008
+       devmem 0x8fe6ce58 32     # [7] 帧率 x10
+  3) 结果: uptime=0:01(确实重启过); /tmp/lcd_reload.log 完整 ——
+       "固件 /mnt/data/cvirtos.bin: 1640640 字节 = 应用区 1638400 + 常驻跳板 2240"
+       "/dev/mem 写入 + 读回校验通过"
+       "热更完成: 新固件已运行 (state=1, 200.1 ms)"
+  4) 结果: 进程 279 root /mnt/data/lcd_sender mon 1000 在跑; 小核 build id=0x484A0008、tmoN=0、
+     PIO=0、frames 持续增长、fps_x10=0x4CC(122.8 FPS, 跑分动态场景)、cpu_sml=0x10/0x11(16~17%)。
+  5) 结论: 拔电重插(SD 卡启动)后无需任何人工操作, 屏幕自动进入 LVGL 跑分 + OSD 监控。
+
+--------------------------------------------------------------------------------
+【以下条目时间精确到分钟(UTC+8), 取自 git 提交时间、文件 mtime 与命令输出】
 --------------------------------------------------------------------------------
 
-2026-09-28 06:45 | (本会话) | 第一次重做整卡镜像 —— 直接在板上 dd|gzip 写回同一张卡的分区,
-    踩了大坑。输出文件 /root/duo256m-sdcard.img.gz 恰好落在"正被 dd 读的那块 ext4"上,
-    于是 dd 把 gzip 正在写的块也读进来, 压缩率崩掉、文件越写越大, 8 分 16 秒后把根分区
-    撑到 100%。(错误示范, 不要照抄) |
-    # 板上:
-    sync
-    dd if=/dev/mmcblk0 bs=1M count=897 2>/dev/null | gzip -6 > /root/duo256m-sdcard.img.gz
-    |
-    结果: gzip: stdout: No space left on device(退出码 1); 生成物反而涨到 522MB。
-    ★ 教训: 整卡 gzip 的输出绝对不能落在被读的那张卡上。要么把数据流到 PC 上压缩,
-      要么干脆在 PC 侧处理镜像 —— 最终采用的就是后者(见 06:58 那条)。
+--------------------------------------------------------------------------------
+2026-09-28 06:45 | (本会话) | 第一次重做整卡镜像 —— 板上 dd|gzip 自反馈, 踩大坑
+--------------------------------------------------------------------------------
+  1) 做了什么: 直接在板上 dd 读整卡、管道给 gzip 写回同一张卡的分区(错误示范)。
+  2) 完整命令(错误示范, 不要照抄):
+       sync
+       dd if=/dev/mmcblk0 bs=1M count=897 2>/dev/null | gzip -6 > /root/duo256m-sdcard.img.gz
+  3) 结果: 输出文件 /root/duo256m-sdcard.img.gz 恰好落在"正被 dd 读的那块 ext4"上,
+     dd 把 gzip 正在写的块也读进来, 压缩率崩掉、文件越写越大, 8 分 16 秒后把根分区撑到
+     100%。报错 `gzip: stdout: No space left on device`(退出码 1), 生成物反而涨到 522MB。
+  4) 教训: 整卡 gzip 的输出绝对不能落在被读的那张卡上。要么把数据流到 PC 上压缩,
+     要么干脆在 PC 侧处理镜像 —— 最终采用的就是后者(见 06:58 那条)。
 
-2026-09-28 06:53 | (本会话) | 清理板子: 失败任务留下的"已删除文件"仍占着空间(根分区 100%),
-    杀掉还开着该文件的 gzip/md5sum 后才释放。 |
-    killall md5sum ; pkill -x gzip ; sleep 2 ; sync
-    rm -f /root/duo256m-sdcard.img.gz /root/reimg.log ; sync
-    df -h /
-    |
-    结果: 由 739M 用 724M 剩 0(100%) 恢复为 739M 用 201M 剩 484M(30%)。
-    ★ 注意: rm 之后空间不一定立刻回来 —— 还有进程开着该文件时空间一直被占着,
-      要先 kill 掉持有者, 再 df 才准。
+--------------------------------------------------------------------------------
+2026-09-28 06:53 | (本会话) | 清理板子: "已删除文件"仍占空间, 杀掉持有者才释放
+--------------------------------------------------------------------------------
+  1) 做了什么: 失败任务留下的文件已 rm 但空间不还(根分区 100%), 杀掉还开着该文件的
+     gzip/md5sum 后才释放。
+  2) 完整命令:
+       killall md5sum ; pkill -x gzip ; sleep 2 ; sync
+       rm -f /root/duo256m-sdcard.img.gz /root/reimg.log ; sync
+       df -h /
+  3) 结果: 由 739M 用 724M 剩 0(100%) 恢复为 739M 用 201M 剩 484M(30%)。
+  4) 教训: rm 之后空间不一定立刻回来 —— 还有进程开着该文件时空间一直被占着,
+     要先 kill 掉持有者, 再 df 才准。
 
-2026-09-28 06:58 | (本会话) | 改用 PC 侧补镜像: 在 WSL 里把已有整卡镜像回环挂载, 只替换
-    p2 里的 /root/指南/readme.txt, 再重新压缩分卷。不动板子盘, 产物也小得多。 |
-    # WSL, root 身份:
-    cat image/duo256m-sdcard.img.gz.part-* > duo256m-sdcard.img.gz
-    gunzip -c duo256m-sdcard.img.gz > duo256m-sdcard.img
-    LOOP=$(losetup -fP --show duo256m-sdcard.img)
-    mkdir -p mnt1 mnt ; mount ${LOOP}p1 mnt1 ; mount ${LOOP}p2 mnt
-    cp -f docs/readme_board.txt "mnt/root/指南/readme.txt"
-    md5sum mnt1/fip.bin mnt1/boot.sd "mnt/root/指南/readme.txt"
-    umount mnt1 mnt ; losetup -d "$LOOP"
-    |
-    结果: 挂载后核对 p1:/fip.bin = a5a5ca0109d98e238ac82c0aae6d175a、
-    p1:/boot.sd = 7dd5a251414c10172e42a644f7177666, 与板上实测一致;
-    替换后 readme.txt 的 md5 = a6be582c431373a84b775d5e603bf501。
-    ★ 注意: 必须用 losetup -P 才会自动识别分区; 另: 镜像里仍有几个 Windows 侧
-      git 索引不了的软链接(如 sensor_cfg.ini), 那是打包时的取舍, 不影响启动。
+--------------------------------------------------------------------------------
+2026-09-28 06:58 | (本会话) | 改用 PC 侧补镜像: 回环挂载, 只替换单个文件
+--------------------------------------------------------------------------------
+  1) 做了什么: 在 WSL 里把已有整卡镜像回环挂载, 只替换 p2 里的 /root/指南/readme.txt,
+     再重新压缩分卷。不动板子盘, 产物也小得多。
+  2) 完整命令(WSL, root 身份):
+       cat image/duo256m-sdcard.img.gz.part-* > duo256m-sdcard.img.gz
+       gunzip -c duo256m-sdcard.img.gz > duo256m-sdcard.img
+       LOOP=$(losetup -fP --show duo256m-sdcard.img)
+       mkdir -p mnt1 mnt ; mount ${LOOP}p1 mnt1 ; mount ${LOOP}p2 mnt
+       cp -f docs/readme_board.txt "mnt/root/指南/readme.txt"
+       md5sum mnt1/fip.bin mnt1/boot.sd "mnt/root/指南/readme.txt"
+       umount mnt1 mnt ; losetup -d "$LOOP"
+  3) 结果: 挂载后核对 p1:/fip.bin = a5a5ca0109d98e238ac82c0aae6d175a、
+     p1:/boot.sd = 7dd5a251414c10172e42a644f7177666, 与板上实测一致;
+     替换后 readme.txt 的 md5 = a6be582c431373a84b775d5e603bf501。
+  4) 注意: 必须用 losetup -P 才会自动识别分区; 另: 镜像里仍有几个 Windows 侧
+     git 索引不了的软链接(如 sensor_cfg.ini), 那是打包时的取舍, 不影响启动。
 
-2026-09-28 06:59 | (本会话) | 修文件系统 + 重新 gzip -6 + 70MB 分卷 + 最终校验。 |
-    # WSL, root 身份:
-    LOOP=$(losetup -fP --show duo256m-sdcard.img)
-    fsck.vfat -a ${LOOP}p1          # p1 是 FAT, 不能用 e2fsck
-    e2fsck -fy ${LOOP}p2            # p2 是 ext4
-    losetup -d "$LOOP"
-    gzip -6 -c duo256m-sdcard.img > duo256m-sdcard.img.gz.new
-    split -b 70M -d -a 2 duo256m-sdcard.img.gz.new part-
-    # --- 校验: 合并 -> 解压 -> 再挂载比对 ---
-    cat part-* > final.gz ; md5sum final.gz
-    gzip -dc final.gz > final.img ; ls -l final.img
-    LOOP=$(losetup -fP --show final.img)
-    mount ${LOOP}p1 v1 ; mount ${LOOP}p2 v2
-    md5sum v1/fip.bin v1/boot.sd v2/etc/init.d/S99user v2/mnt/data/auto.sh \
-           v2/mnt/data/cvirtos.bin v2/mnt/data/lcd_sender \
-           v2/mnt/system/ko/loadsystemko.sh "v2/root/指南/readme.txt"
-    od -An -tx1 -j 510 -N 2 final.img        # MBR 签名, 应为 55 aa
-    umount v1 v2 ; losetup -d "$LOOP"
-    |
-    结果: 合并后 gz = 206982525 字节, md5 = bcb713adbc7adf4fd9c5c2cd12437ac4;
-    解压 940572672 字节(= 897 MiB); 分卷 part-00/01 = 70 MiB、part-02 = 57.4 MiB;
-    分区内 14 个文件 md5 全部与板上实测一致; MBR 签名 55 aa; p2 空闲 484M。
-    ★ 教训: e2fsck 只能用在 ext4 上, FAT 分区要用 fsck.vfat, 否则直接报错、脚本中断。
-    ★ 教训: 板上 dd 出来的 ext4 带着 orphan inode 表, 用 e2fsck -fn 看会报"仍存在错误";
-      用 e2fsck -fy 修一次即干净。e2fsck -n 不做日志重放, 所以看到的不是最终状态。
+--------------------------------------------------------------------------------
+2026-09-28 06:59 | (本会话) | 修文件系统 + 重新 gzip -6 + 70MB 分卷 + 最终校验
+--------------------------------------------------------------------------------
+  1) 完整命令(WSL, root 身份):
+       LOOP=$(losetup -fP --show duo256m-sdcard.img)
+       fsck.vfat -a ${LOOP}p1          # p1 是 FAT, 不能用 e2fsck
+       e2fsck -fy ${LOOP}p2            # p2 是 ext4
+       losetup -d "$LOOP"
+       gzip -6 -c duo256m-sdcard.img > duo256m-sdcard.img.gz.new
+       split -b 70M -d -a 2 duo256m-sdcard.img.gz.new part-
+       # --- 校验: 合并 -> 解压 -> 再挂载比对 ---
+       cat part-* > final.gz ; md5sum final.gz
+       gzip -dc final.gz > final.img ; ls -l final.img
+       LOOP=$(losetup -fP --show final.img)
+       mount ${LOOP}p1 v1 ; mount ${LOOP}p2 v2
+       md5sum v1/fip.bin v1/boot.sd v2/etc/init.d/S99user v2/mnt/data/auto.sh \
+              v2/mnt/data/cvirtos.bin v2/mnt/data/lcd_sender \
+              v2/mnt/system/ko/loadsystemko.sh "v2/root/指南/readme.txt"
+       od -An -tx1 -j 510 -N 2 final.img        # MBR 签名, 应为 55 aa
+       umount v1 v2 ; losetup -d "$LOOP"
+  2) 结果: 合并后 gz = 206982525 字节, md5 = bcb713adbc7adf4fd9c5c2cd12437ac4;
+     解压 940572672 字节(= 897 MiB); 分卷 part-00/01 = 70 MiB、part-02 = 57.4 MiB;
+     分区内 14 个文件 md5 全部与板上实测一致; MBR 签名 55 aa; p2 空闲 484M。
+  3) 教训: e2fsck 只能用在 ext4 上, FAT 分区要用 fsck.vfat, 否则直接报错、脚本中断。
+  4) 教训: 板上 dd 出来的 ext4 带着 orphan inode 表, 用 e2fsck -fn 看会报"仍存在错误";
+     用 e2fsck -fy 修一次即干净。e2fsck -n 不做日志重放, 所以看到的不是最终状态。
 
-2026-09-28 07:00 | (本会话) | 更新仓库里的校验清单与说明。 |
-    # 见仓库 image/CHECKSUMS.txt 与 README.md 第 2 节
-    |
-    结果: CHECKSUMS.txt 写入新 gz 的 md5/尺寸、三个分卷尺寸、以及分区内 14 个文件的
-    md5 与字节数; README.md 同步新的镜像 md5 与"镜像已 e2fsck 清理"的说明。
-    顺带纠正: 旧版 CHECKSUMS 把 S99user 的尺寸写成 2804 字节, 实际是 1009 字节
-    (md5 一直是对的)。
+--------------------------------------------------------------------------------
+2026-09-28 07:00 | (本会话) | 更新仓库里的校验清单与说明
+--------------------------------------------------------------------------------
+  1) 做了什么: 更新 image/CHECKSUMS.txt 与 README.md 第 2 节。
+  2) 结果: CHECKSUMS.txt 写入新 gz 的 md5/尺寸、三个分卷尺寸、以及分区内 14 个文件的
+     md5 与字节数; README.md 同步新的镜像 md5 与"镜像已 e2fsck 清理"的说明。
+  3) 顺带纠正: 旧版 CHECKSUMS 把 S99user 的尺寸写成 2804 字节, 实际是 1009 字节
+     (md5 一直是对的)。
 
-2026-09-28 07:01 | (本会话) | 首次尝试 push 到 GitHub —— 因两个原因失败。 |
-    cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
-    git add -A
-    git commit -m "image: 重制整卡镜像..."
-    git remote add origin https://github.com/ewfgwae/milkvduo256m.git
-    git push https://x-access-token:<token>@github.com/ewfgwae/milkvduo256m.git main
-    |
-    结果: ① "Author identity unknown" —— WSL 侧 git 没配 user.name/user.email;
-          ② "Permission to ewfgwae/milkvduo256m.git denied to ewfgwae" HTTP 403
-             (GitHub 服务端返回, 说明网络与认证都通了, 是权限不够)。
-    ★ 教训: 在 Windows 上提交过, 不代表 WSL 里也有身份 —— 两边的 git config 是分开的。
+--------------------------------------------------------------------------------
+2026-09-28 07:01 | (本会话) | 首次尝试 push 到 GitHub —— 因两个原因失败
+--------------------------------------------------------------------------------
+  1) 完整命令:
+       cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
+       git add -A
+       git commit -m "image: 重制整卡镜像..."
+       git remote add origin https://github.com/ewfgwae/milkvduo256m.git
+       git push https://x-access-token:<token>@github.com/ewfgwae/milkvduo256m.git main
+  2) 结果: ① "Author identity unknown" —— WSL 侧 git 没配 user.name/user.email;
+     ② "Permission to ewfgwae/milkvduo256m.git denied to ewfgwae" HTTP 403
+        (GitHub 服务端返回, 说明网络与认证都通了, 是权限不够)。
+  3) 教训: 在 Windows 上提交过, 不代表 WSL 里也有身份 —— 两边的 git config 是分开的。
 
-2026-09-28 07:02 | (本会话) | 诊断 403 + 补 WSL 侧 git 身份 + 提交镜像重制结果。 |
-    # 1) 看 token 的 scope —— 关键就在这一行:
-    curl -sS -D - -o /dev/null -H "Authorization: token <token>" https://api.github.com/user \
-      | grep -i x-oauth-scopes
-    # 2) 补身份并提交:
-    cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
-    git config user.name  "陈金成"
-    git config user.email "15523289+chen-jinchengwac@user.noreply.gitee.com"
-    git add -A && git commit -m "image: 重制整卡镜像(仅更新 /root/指南/readme.txt 为最新版)"
-    |
-    结果: ① 返回头 "x-oauth-scopes:" 为**空** —— 该 token 一个 scope 都没勾,
-             只能读公开数据、不能写仓库。用 API 测写权限也印证: 创建测试 ref
-             返回 "404 Not Found"(有权限时才会返回 422 之类的语义错误)。
-          ② 提交成功, commit = c26c1fc。
-    ★ 教训: token 拿到 403, 且报 "remote: Permission to <用户>/<仓库> denied to <同一个用户>"
-      时, 八成是 scope 不足, 不是仓库不存在、也不是账号不对。
+--------------------------------------------------------------------------------
+2026-09-28 07:02 | (本会话) | 诊断 403 + 补 WSL 侧 git 身份 + 提交镜像重制结果
+--------------------------------------------------------------------------------
+  1) 完整命令:
+       # 1) 看 token 的 scope —— 关键就在这一行:
+       curl -sS -D - -o /dev/null -H "Authorization: token <token>" https://api.github.com/user \
+         | grep -i x-oauth-scopes
+       # 2) 补身份并提交:
+       cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
+       git config user.name  "陈金成"
+       git config user.email "15523289+chen-jinchengwac@user.noreply.gitee.com"
+       git add -A && git commit -m "image: 重制整卡镜像(仅更新 /root/指南/readme.txt 为最新版)"
+  2) 结果: ① 返回头 "x-oauth-scopes:" 为**空** —— 该 token 一个 scope 都没勾,
+     只能读公开数据、不能写仓库。用 API 测写权限也印证: 创建测试 ref 返回
+     "404 Not Found"(有权限时才会返回 422 之类的语义错误)。
+     ② 提交成功, commit = c26c1fc。
+  3) 教训: token 拿到 403, 且报 "remote: Permission to <用户>/<仓库> denied to <同一个用户>"
+     时, 八成是 scope 不足, 不是仓库不存在、也不是账号不对。
 
-2026-09-28 07:04 | (本会话) | 用户重建 classic token 并勾选 repo 大项, 验证 scope 通过。 |
-    curl -sS -D - -o /dev/null -H "Authorization: token <新token>" https://api.github.com/user \
-      | grep -i x-oauth-scopes
-    |
-    结果: "x-oauth-scopes: repo"。与上一个"空 scope"的 token 形成对照。
+--------------------------------------------------------------------------------
+2026-09-28 07:04 | (本会话) | 用户重建 classic token 并勾选 repo 大项, 验证 scope 通过
+--------------------------------------------------------------------------------
+  1) 完整命令:
+       curl -sS -D - -o /dev/null -H "Authorization: token <新token>" https://api.github.com/user \
+         | grep -i x-oauth-scopes
+  2) 结果: "x-oauth-scopes: repo"。与上一个"空 scope"的 token 形成对照。
 
-2026-09-28 07:05 | (本会话) | 正式推送 main 到 GitHub。约 206MB, 耗时约 6 分钟。 |
-    cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
-    git -c http.proxy= -c https.proxy= \
-      push https://x-access-token:<新token>@github.com/ewfgwae/milkvduo256m.git main
-    |
-    结果: "* [new branch] main -> main", 退出码 0。
-    ★ 本机 git 全局配了 socks5 代理(socks5h://127.0.0.1:10808), WSL 里连不上,
-      所以命令里显式用 -c http.proxy= -c https.proxy= 把代理置空。
-    ★ GitHub 会对 >50MB 的文件打 warning(part-00/01 各 70MB), 那只是建议改用 LFS,
-      不是错误, push 照常成功。
+--------------------------------------------------------------------------------
+2026-09-28 07:05 | (本会话) | 正式推送 main 到 GitHub (约 206MB, 耗时约 6 分钟)
+--------------------------------------------------------------------------------
+  1) 完整命令:
+       cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
+       git -c http.proxy= -c https.proxy= \
+         push https://x-access-token:<新token>@github.com/ewfgwae/milkvduo256m.git main
+  2) 结果: "* [new branch] main -> main", 退出码 0。
+  3) 注意: 本机 git 全局配了 socks5 代理(socks5h://127.0.0.1:10808), WSL 里连不上,
+     所以命令里显式用 -c http.proxy= -c https.proxy= 把代理置空。
+  4) 注意: GitHub 会对 >50MB 的文件打 warning(part-00/01 各 70MB), 那只是建议改用 LFS,
+     不是错误, push 照常成功。
 
-2026-09-28 07:12 | (本会话) | 复核远端内容与本地是否一致。 |
-    curl -sS -H "Authorization: token <新token>" -H "User-Agent: diag" \
-      "https://api.github.com/repos/ewfgwae/milkvduo256m/git/trees/main?recursive=1"
-    git ls-remote origin
-    |
-    结果: 远端 59 个 blob、truncated=false, 与本地逐项一致;
-    refs/heads/main = c26c1fc1d18b1528f00903aff38860687f288ce4(等于本地 HEAD)。
-    仓库地址: https://github.com/ewfgwae/milkvduo256m
+--------------------------------------------------------------------------------
+2026-09-28 07:12 | (本会话) | 复核远端内容与本地是否一致
+--------------------------------------------------------------------------------
+  1) 完整命令:
+       curl -sS -H "Authorization: token <新token>" -H "User-Agent: diag" \
+         "https://api.github.com/repos/ewfgwae/milkvduo256m/git/trees/main?recursive=1"
+       git ls-remote origin
+  2) 结果: 远端 59 个 blob、truncated=false, 与本地逐项一致;
+     refs/heads/main = c26c1fc1d18b1528f00903aff38860687f288ce4(等于本地 HEAD)。
+     仓库地址: https://github.com/ewfgwae/milkvduo256m
 
-2026-09-28 07:14 | (本会话) | 收尾: 清掉临时脚本里残留的 token, 确认 git 配置干净。 |
-    cd /mnt/c/Users/1/AppData/Local/Temp
-    grep -l 'ghp_' m_*.sh | xargs rm -f
-    grep -c 'ghp_' "<仓库>/.git/config"      # 应为 0
-    |
-    结果: 临时目录已无 token 残留; .git/config 里没有 token(remote 存的是干净 URL)。
-    ★ 提醒: 过程中两个 token 都曾明文出现在对话里, 事后应到 GitHub 设置里吊销。
+--------------------------------------------------------------------------------
+2026-09-28 07:14 | (本会话) | 收尾: 清掉临时脚本里残留的 token, 确认 git 配置干净
+--------------------------------------------------------------------------------
+  1) 完整命令:
+       cd /mnt/c/Users/1/AppData/Local/Temp
+       grep -l 'ghp_' m_*.sh | xargs rm -f
+       grep -c 'ghp_' "<仓库>/.git/config"      # 应为 0
+  2) 结果: 临时目录已无 token 残留; .git/config 里没有 token(remote 存的是干净 URL)。
+  3) 提醒: 过程中两个 token 都曾明文出现在对话里, 事后应到 GitHub 设置里吊销。
 
-2026-09-28 07:15 | (本会话) | 整理本目录: 原 readme.txt 改名为本文件 2026.9.28.txt;
-    另新写一份 readme.txt, 专门说明"这些指南该怎么写"(命名规则、两部分结构、
-    每条记录的格式、时间精度要求、安全铁律)。 |
-    # PC 侧仓库(实际执行):
-    Copy-Item docs\readme_board.txt sdcard\rootfs\root\指南\2026.9.28.txt
-    Remove-Item docs\readme_board.txt, sdcard\rootfs\root\指南\readme.txt
-    # 板上同步:
-    scp readme.txt 2026.9.28.txt root@192.168.42.1:/root/指南/
-    |
-    结果: /root/指南/ 下为 readme.txt(写法说明) + 2026.9.28.txt(本日记录)。
-    历史上取不到分钟时间的条目保持"只写日期", 未编造时间。
+--------------------------------------------------------------------------------
+2026-09-28 07:15 | (本会话) | 整理 /root/指南/: 拆成"写法说明 + 当日记录"两份
+--------------------------------------------------------------------------------
+  1) 做了什么: 原 readme.txt 改名为 2026.9.28.txt; 另新写一份 readme.txt,
+     专门说明"这些指南该怎么写"(命名规则、两部分结构、每条记录的格式、时间精度要求、
+     安全铁律)。
+  2) 完整命令(PC 侧仓库实际执行):
+       Copy-Item docs\readme_board.txt sdcard\rootfs\root\指南\2026.9.28.txt
+       Remove-Item docs\readme_board.txt, sdcard\rootfs\root\指南\readme.txt
+  3) 同步板上:
+       scp readme.txt 2026.9.28.txt root@192.168.42.1:/root/指南/
+  4) 结果: /root/指南/ 下为 readme.txt(写法说明) + 2026.9.28.txt(本日记录)。
+     历史上取不到分钟时间的条目保持"只写日期", 未编造时间。
+
+--------------------------------------------------------------------------------
+2026-09-28 07:16 ~ 07:32 | (本会话) | 修正 README 失效引用 + 推送 + 全文条目化重排
+--------------------------------------------------------------------------------
+  1) 做了什么: 修 README.md 里指向已删除 docs/readme_board.txt 的两处失效引用,
+     改指 sdcard/rootfs/root/指南/。
+  2) 做了什么: git 提交(521806e)并 push 到 GitHub main。
+  3) 做了什么: 按 readme.txt 新规范, 把本文件全文条目化重排 —— 第一~七章每条一个知识点,
+     第八章每条记录拆成"做了什么/命令/结果/教训"分点; 事实与命令一条未删。
+  4) 同步板上:
+       setsid scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+           readme.txt 2026.9.28.txt root@192.168.42.1:/root/指南/
+       # 复核(板上与本地 md5 应一致):
+       md5sum /root/指南/readme.txt /root/指南/2026.9.28.txt
+  5) 结果: 板上 md5 与本地逐字节一致; 远端 main = 521806e(后随本次重排再推一次)。
+  6) 说明: 本条跨了几分钟(改动、推送、重排、同步是连续做的), 故写成时间范围而不是单点。
