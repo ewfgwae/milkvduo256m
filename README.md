@@ -150,10 +150,11 @@ duo256m-lcd-rtos/
 │   │   └── linux_5.10/…       spidev 缓冲上限
 │   ├── big_core/              大核程序源码 lcd_sender.c + lcd_shm.h
 │   └── examples/              大核用户态例子 st7789/ 与 lvgl_port/（wiringX + spidev）
-├── tools/                     一键脚本（见第 5 节）
-└── docs/
-    └── readme_board.txt       板上 /root/指南/readme.txt 的副本：完整开发指令与排障记录
+└── tools/                     一键脚本（见第 5 节）
 ```
+
+板上完整开发记录随卡一起走，在 `sdcard/rootfs/root/指南/`：`readme.txt` 说明这些指南
+怎么写，`YYYY.M.D.txt` 是当日记录（环境约定 + 变更记录），上板后位于 `/root/指南/`。
 
 ---
 
@@ -374,8 +375,8 @@ devmem 0x8fec3958 32      # tmoN
 
 ## 8. 参考
 
-- 板上完整开发指令、内存布局、fip 重烧流程与排障记录：`docs/readme_board.txt`
-  （板子上的副本在 `/root/指南/readme.txt`）
+- 板上完整开发指令、内存布局、fip 重烧流程与排障记录：`sdcard/rootfs/root/指南/YYYY.M.D.txt`
+  （板子上的路径是 `/root/指南/`，其中 `readme.txt` 说明这些指南怎么写）
 - Milk-V Duo256M 文档：<https://milkv.io/docs/duo/getting-started/duo256m>
 - duo-examples：<https://github.com/milkv-duo/duo-examples>
 

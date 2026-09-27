@@ -1,44 +1,73 @@
 ================================================================================
-  Milk-V Duo256M 双核 LCD 监控设备 —— 开发指令记录
-  文件位置: /root/指南/readme.txt
+  Milk-V Duo256M 双核 LCD 监控设备 —— 开发记录
+  日期: 2026-09-28        文件位置: /root/指南/2026.9.28.txt
 ================================================================================
 
+【写法约定见同目录 readme.txt】本文件分两部分: 第一章"环境与约定" + 第八章"变更记录"。
+每条记录的时间精确到分钟(UTC+8); 确实取不到准确时间的(旧记录)只写日期。
+
+★ 安全铁律: fip.bin 是唯一的引导固件, 不要随手动它。本板有 SD 读卡器, 最坏情况可以
+  重写整卡救回来, 但要拆机取卡、代价高。除非"常驻跳板本身要改"或"热更后小核彻底起
+  不来", 否则改小核固件一律走"热更"(见第五章) —— 它不碰 fip.bin、不重启系统。
+  万一必须重打包 fip, 做完必须做字节级校验: 除小核固件段(BLCP_2ND)外其余逐字节不变。
+
+================================================================================
+ 一、环境与约定  (下一个接手的人必须先知道的一切)
+================================================================================
+
+1.1 本机(PC)侧的编译环境 —— WSL
 --------------------------------------------------------------------------------
-【写给之后接手的人 —— 请务必照做】
+  发行版             : Ubuntu-22.04      (默认用户 chen, SDK 已装好)
+  SDK 根目录         : /home/chen/duo-sdk-v2
+  小核固件工程       : /home/chen/duo-sdk-v2/freertos/cvitek
+  小核固件产物       : /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin
+                       ★ 是 install/bin, 不是 build/install/bin
+  小核构建树         : /home/chen/duo-sdk-v2/freertos/cvitek/build/
+                       下分 arch / kernel / common / hal / driver / task 六个子目录;
+                       可以各自 `cmake --build . --target install`,
+                       最后在 task 里再 `cmake --build . --target cvirtos.bin`。
+   riscv64 工具链目录 : /home/chen/duo-sdk-v2/host-tools/gcc/riscv64-elf-x86_64/bin
+                       ★ 目录名是 riscv64-elf-x86_64, 但里面的二进制前缀是
+                         riscv64-unknown-elf-  (两者不一致, 别拼错)
+  aarch64 交叉编译器 : /home/chen/duo-sdk-v2/host-tools/gcc/
+                       gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/
+                       aarch64-linux-gnu-gcc
+  大核程序源码       : ~/lcdhost/lcd_sender.c   (编译产物 ~/lcdhost/lcd_sender)
+
+1.2 从 Windows 调 WSL 的规矩  (每一条都是踩过坑总结出来的)
 --------------------------------------------------------------------------------
-本文件记录"本机(PC/WSL) <-> 开发板"之间所有常用指令: 编译、拷贝、执行、烧录/热更。
+  ★ 多行/复杂命令必须先写成 .sh 文件再执行, 不要用内联引号:
+       wsl -d Ubuntu-22.04 bash -lc "..."        <-- 禁止!
+     PowerShell 会把 $、&&、管道、引号全吃掉(历史上就是这么把工具链 PATH 搞丢的)。
+     正确做法两步:
+       (1) 把脚本写到  C:\Users\1\AppData\Local\Temp\xxx.sh
+       (2) 执行        wsl -d Ubuntu-22.04 bash /mnt/c/Users/1/AppData/Local/Temp/xxx.sh
 
-请每一位改过代码、编译、部署或升级固件的人, 在动完手之后把用到的指令
-追加到文末"七、变更记录"里, 格式:
+  ★ 编小核固件要用 root 身份进 WSL:
+       wsl -d Ubuntu-22.04 -u root bash /mnt/c/Users/1/AppData/Local/Temp/xxx.sh
+     原因: build 树里有上百个 root 属主的文件, 用 chen 跑会卡在
+           "Error writing to build log: Permission denied"; 而 sudo 要输密码。
 
-    日期 | 改动人 | 改了什么 | 用到的完整指令 | 结果/备注
+  ★ 编译前必须先手工 export 工具链 PATH:
+       export PATH=/home/chen/duo-sdk-v2/host-tools/gcc/riscv64-elf-x86_64/bin:$PATH
 
-要求:
-  1. 指令写成"可直接复制粘贴"的完整形式, 不要凭记忆简写。
-  2. 只写你这次真正执行并验证成功的, 不要把没试过的写进来。
-  3. 涉及固件/内存地址的改动, 一定写清楚目标地址和校验方式。
+  ★ 读 WSL 里的文件用 UNC 路径:  \\wsl.localhost\Ubuntu-22.04\home\chen\...
+  ★ Windows 的 D 盘在 WSL 里是 /mnt/d/...   (路径带空格要加引号)
 
-★ 安全铁律: 本设备没有任何变砖恢复手段(无 SD 读卡器、无 USB 转串口模块)。
-  任何情况下都不要乱动 fip.bin; 若确有必要, 必须做字节级校验, 确认除小核固件段
-  (BLCP_2ND)外其余内容逐字节不变。日常改小核固件请一律走"热更"(见第四章),
-  它不碰 fip.bin、不重启系统。
+1.3 板子侧
+--------------------------------------------------------------------------------
+  IP 192.168.42.1    用户 root    密码 milkv     (USB RNDIS 网卡, 插上就有)
 
-================================================================================
- 一、环境与路径约定
-================================================================================
-本机编译环境 = WSL (Ubuntu-22.04), 用户 chen:
+  免交互 ssh / scp (脚本里用, 密码 milkv 由 SSH_ASKPASS 提供):
+      printf '#!/bin/sh\necho milkv\n' > /tmp/ap.sh ; chmod +x /tmp/ap.sh
+      export SSH_ASKPASS=/tmp/ap.sh
+      export SSH_ASKPASS_REQUIRE=force
+      setsid ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.42.1
+      setsid scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 本地文件 root@192.168.42.1:/root/
+    ★ 必须配 setsid, 否则会卡在交互式密码输入出不来。
 
-  SDK 根目录          : ~/duo-sdk-v2
-  小核固件工程         : ~/duo-sdk-v2/freertos/cvitek
-  小核固件产物         : ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin
-  aarch64 交叉编译器   : ~/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc
-  riscv64 交叉编译器   : ~/duo-sdk-v2/host-tools/gcc/riscv64-elf-x86_64/bin/riscv64-unknown-elf-*
-  大核程序源码         : ~/lcdhost/lcd_sender.c   (编译产物 ~/lcdhost/lcd_sender)
-
-开发板:
-  IP 192.168.42.1   用户 root   密码 milkv
-  本文件 : /root/指南/readme.txt
-  提示   : /tmp 重启后会清空, 想长期保存的文件放 /root。
+  提示: /tmp 是 tmpfs(76MB), 重启即清空, 想长期保存的文件放 /root。
+        板上返回码用 `ssh ... 'cmd'; echo $?` 拿, 别靠肉眼判断。
 
 ================================================================================
  二、编译指令
@@ -292,9 +321,43 @@
         只有中止不掉才判"通道被占"(返回 0xE5)。
 
 ================================================================================
- 七、变更记录 (后来者请往下追加)
+ 七、GitHub 仓库 —— 本工程的备份与分发
 ================================================================================
-格式: 日期 | 改动人 | 改了什么 | 完整指令 | 结果
+【地址】https://github.com/ewfgwae/milkvduo256m    (public, 默认分支 main)
+
+【本地仓库位置(PC)】
+  d:\ruanjian\installation package\duo-examples-main\duo-examples-main\duo256m-lcd-rtos
+
+【仓库里有什么】
+  image/            整卡镜像(gzip 后按 70MB 分卷) + CHECKSUMS.txt
+  sdcard/           可直接覆盖进 SD 卡的文件, 按分区结构摆好:
+                      boot/   -> FAT 分区(p1)
+                      rootfs/ -> ext4 分区(p2)
+  src/sdk_overlay/  SDK 的改动, 按 duo-sdk-v2 的相对路径存放
+  src/big_core/     大核程序源码 lcd_sender.c + lcd_shm.h
+  src/examples/     大核用户态例子 st7789/ 与 lvgl_port/
+  tools/            一键脚本: apply_sdk_overlay.sh / build_small_core.sh /
+                    build_big_core.sh / deploy.sh
+  README.md         硬件接线、写卡、增量覆盖、编译、运行、排障
+
+【三种用法】
+  1. 重做一张卡 : 合并分卷 -> 校验 md5 -> 写卡(balenaEtcher 或 dd)
+  2. 增量升级   : 把 sdcard/ 里对应文件覆盖到卡的两个分区
+  3. 从源码重建 : tools/apply_sdk_overlay.sh 覆盖 SDK -> 编小核/大核 -> deploy.sh 热更
+
+【推送流程(本次实际走的)】
+  cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
+  git remote add origin https://github.com/ewfgwae/milkvduo256m.git
+  git -c http.proxy= -c https.proxy= \
+      push https://x-access-token:<你的token>@github.com/ewfgwae/milkvduo256m.git main
+  ★ 本机 git 全局配了 socks5 代理(127.0.0.1:10808), WSL 里连不上, 所以要把代理置空。
+  ★ token 必须勾选 classic 的 repo 大项; 空的 scope 会返回 HTTP 403。
+
+================================================================================
+ 八、变更记录 (后来者请往下追加)
+================================================================================
+格式: YYYY-MM-DD HH:MM | 改动人 | 改了什么 | 完整指令 | 结果
+      取不到准确分钟时间的旧记录, 只写日期即可。
 
 2026-09-28 | (本会话) | Step0 排雷: 小核新增 sysdma_test.c, 启动时做一次 sysDMA
     内存到内存搬运自检, 结果写 g_dma_probe[16] (走热更部署, 零风险) |
@@ -410,3 +473,156 @@
     进程 279 root /mnt/data/lcd_sender mon 1000 在跑; 小核 build id=0x484A0008、tmoN=0、PIO=0、
     frames 持续增长、fps_x10=0x4CC(122.8 FPS, 跑分动态场景)、cpu_sml=0x10/0x11(16~17%)。
     即: 拔电重插(SD 卡启动)后无需任何人工操作, 屏幕自动进入 LVGL 跑分 + OSD 监控。
+
+--------------------------------------------------------------------------------
+2026-09-28 06:45 起 —— 打包上传 GitHub(时间取自 git 提交时间、文件 mtime 与命令输出)
+以下条目时间精确到分钟(UTC+8); 上面几条旧记录取不到准确时间, 故只写日期。
+--------------------------------------------------------------------------------
+
+2026-09-28 06:45 | (本会话) | 第一次重做整卡镜像 —— 直接在板上 dd|gzip 写回同一张卡的分区,
+    踩了大坑。输出文件 /root/duo256m-sdcard.img.gz 恰好落在"正被 dd 读的那块 ext4"上,
+    于是 dd 把 gzip 正在写的块也读进来, 压缩率崩掉、文件越写越大, 8 分 16 秒后把根分区
+    撑到 100%。(错误示范, 不要照抄) |
+    # 板上:
+    sync
+    dd if=/dev/mmcblk0 bs=1M count=897 2>/dev/null | gzip -6 > /root/duo256m-sdcard.img.gz
+    |
+    结果: gzip: stdout: No space left on device(退出码 1); 生成物反而涨到 522MB。
+    ★ 教训: 整卡 gzip 的输出绝对不能落在被读的那张卡上。要么把数据流到 PC 上压缩,
+      要么干脆在 PC 侧处理镜像 —— 最终采用的就是后者(见 06:58 那条)。
+
+2026-09-28 06:53 | (本会话) | 清理板子: 失败任务留下的"已删除文件"仍占着空间(根分区 100%),
+    杀掉还开着该文件的 gzip/md5sum 后才释放。 |
+    killall md5sum ; pkill -x gzip ; sleep 2 ; sync
+    rm -f /root/duo256m-sdcard.img.gz /root/reimg.log ; sync
+    df -h /
+    |
+    结果: 由 739M 用 724M 剩 0(100%) 恢复为 739M 用 201M 剩 484M(30%)。
+    ★ 注意: rm 之后空间不一定立刻回来 —— 还有进程开着该文件时空间一直被占着,
+      要先 kill 掉持有者, 再 df 才准。
+
+2026-09-28 06:58 | (本会话) | 改用 PC 侧补镜像: 在 WSL 里把已有整卡镜像回环挂载, 只替换
+    p2 里的 /root/指南/readme.txt, 再重新压缩分卷。不动板子盘, 产物也小得多。 |
+    # WSL, root 身份:
+    cat image/duo256m-sdcard.img.gz.part-* > duo256m-sdcard.img.gz
+    gunzip -c duo256m-sdcard.img.gz > duo256m-sdcard.img
+    LOOP=$(losetup -fP --show duo256m-sdcard.img)
+    mkdir -p mnt1 mnt ; mount ${LOOP}p1 mnt1 ; mount ${LOOP}p2 mnt
+    cp -f docs/readme_board.txt "mnt/root/指南/readme.txt"
+    md5sum mnt1/fip.bin mnt1/boot.sd "mnt/root/指南/readme.txt"
+    umount mnt1 mnt ; losetup -d "$LOOP"
+    |
+    结果: 挂载后核对 p1:/fip.bin = a5a5ca0109d98e238ac82c0aae6d175a、
+    p1:/boot.sd = 7dd5a251414c10172e42a644f7177666, 与板上实测一致;
+    替换后 readme.txt 的 md5 = a6be582c431373a84b775d5e603bf501。
+    ★ 注意: 必须用 losetup -P 才会自动识别分区; 另: 镜像里仍有几个 Windows 侧
+      git 索引不了的软链接(如 sensor_cfg.ini), 那是打包时的取舍, 不影响启动。
+
+2026-09-28 06:59 | (本会话) | 修文件系统 + 重新 gzip -6 + 70MB 分卷 + 最终校验。 |
+    # WSL, root 身份:
+    LOOP=$(losetup -fP --show duo256m-sdcard.img)
+    fsck.vfat -a ${LOOP}p1          # p1 是 FAT, 不能用 e2fsck
+    e2fsck -fy ${LOOP}p2            # p2 是 ext4
+    losetup -d "$LOOP"
+    gzip -6 -c duo256m-sdcard.img > duo256m-sdcard.img.gz.new
+    split -b 70M -d -a 2 duo256m-sdcard.img.gz.new part-
+    # --- 校验: 合并 -> 解压 -> 再挂载比对 ---
+    cat part-* > final.gz ; md5sum final.gz
+    gzip -dc final.gz > final.img ; ls -l final.img
+    LOOP=$(losetup -fP --show final.img)
+    mount ${LOOP}p1 v1 ; mount ${LOOP}p2 v2
+    md5sum v1/fip.bin v1/boot.sd v2/etc/init.d/S99user v2/mnt/data/auto.sh \
+           v2/mnt/data/cvirtos.bin v2/mnt/data/lcd_sender \
+           v2/mnt/system/ko/loadsystemko.sh "v2/root/指南/readme.txt"
+    od -An -tx1 -j 510 -N 2 final.img        # MBR 签名, 应为 55 aa
+    umount v1 v2 ; losetup -d "$LOOP"
+    |
+    结果: 合并后 gz = 206982525 字节, md5 = bcb713adbc7adf4fd9c5c2cd12437ac4;
+    解压 940572672 字节(= 897 MiB); 分卷 part-00/01 = 70 MiB、part-02 = 57.4 MiB;
+    分区内 14 个文件 md5 全部与板上实测一致; MBR 签名 55 aa; p2 空闲 484M。
+    ★ 教训: e2fsck 只能用在 ext4 上, FAT 分区要用 fsck.vfat, 否则直接报错、脚本中断。
+    ★ 教训: 板上 dd 出来的 ext4 带着 orphan inode 表, 用 e2fsck -fn 看会报"仍存在错误";
+      用 e2fsck -fy 修一次即干净。e2fsck -n 不做日志重放, 所以看到的不是最终状态。
+
+2026-09-28 07:00 | (本会话) | 更新仓库里的校验清单与说明。 |
+    # 见仓库 image/CHECKSUMS.txt 与 README.md 第 2 节
+    |
+    结果: CHECKSUMS.txt 写入新 gz 的 md5/尺寸、三个分卷尺寸、以及分区内 14 个文件的
+    md5 与字节数; README.md 同步新的镜像 md5 与"镜像已 e2fsck 清理"的说明。
+    顺带纠正: 旧版 CHECKSUMS 把 S99user 的尺寸写成 2804 字节, 实际是 1009 字节
+    (md5 一直是对的)。
+
+2026-09-28 07:01 | (本会话) | 首次尝试 push 到 GitHub —— 因两个原因失败。 |
+    cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
+    git add -A
+    git commit -m "image: 重制整卡镜像..."
+    git remote add origin https://github.com/ewfgwae/milkvduo256m.git
+    git push https://x-access-token:<token>@github.com/ewfgwae/milkvduo256m.git main
+    |
+    结果: ① "Author identity unknown" —— WSL 侧 git 没配 user.name/user.email;
+          ② "Permission to ewfgwae/milkvduo256m.git denied to ewfgwae" HTTP 403
+             (GitHub 服务端返回, 说明网络与认证都通了, 是权限不够)。
+    ★ 教训: 在 Windows 上提交过, 不代表 WSL 里也有身份 —— 两边的 git config 是分开的。
+
+2026-09-28 07:02 | (本会话) | 诊断 403 + 补 WSL 侧 git 身份 + 提交镜像重制结果。 |
+    # 1) 看 token 的 scope —— 关键就在这一行:
+    curl -sS -D - -o /dev/null -H "Authorization: token <token>" https://api.github.com/user \
+      | grep -i x-oauth-scopes
+    # 2) 补身份并提交:
+    cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
+    git config user.name  "陈金成"
+    git config user.email "15523289+chen-jinchengwac@user.noreply.gitee.com"
+    git add -A && git commit -m "image: 重制整卡镜像(仅更新 /root/指南/readme.txt 为最新版)"
+    |
+    结果: ① 返回头 "x-oauth-scopes:" 为**空** —— 该 token 一个 scope 都没勾,
+             只能读公开数据、不能写仓库。用 API 测写权限也印证: 创建测试 ref
+             返回 "404 Not Found"(有权限时才会返回 422 之类的语义错误)。
+          ② 提交成功, commit = c26c1fc。
+    ★ 教训: token 拿到 403, 且报 "remote: Permission to <用户>/<仓库> denied to <同一个用户>"
+      时, 八成是 scope 不足, 不是仓库不存在、也不是账号不对。
+
+2026-09-28 07:04 | (本会话) | 用户重建 classic token 并勾选 repo 大项, 验证 scope 通过。 |
+    curl -sS -D - -o /dev/null -H "Authorization: token <新token>" https://api.github.com/user \
+      | grep -i x-oauth-scopes
+    |
+    结果: "x-oauth-scopes: repo"。与上一个"空 scope"的 token 形成对照。
+
+2026-09-28 07:05 | (本会话) | 正式推送 main 到 GitHub。约 206MB, 耗时约 6 分钟。 |
+    cd "/mnt/d/ruanjian/installation package/duo-examples-main/duo-examples-main/duo256m-lcd-rtos"
+    git -c http.proxy= -c https.proxy= \
+      push https://x-access-token:<新token>@github.com/ewfgwae/milkvduo256m.git main
+    |
+    结果: "* [new branch] main -> main", 退出码 0。
+    ★ 本机 git 全局配了 socks5 代理(socks5h://127.0.0.1:10808), WSL 里连不上,
+      所以命令里显式用 -c http.proxy= -c https.proxy= 把代理置空。
+    ★ GitHub 会对 >50MB 的文件打 warning(part-00/01 各 70MB), 那只是建议改用 LFS,
+      不是错误, push 照常成功。
+
+2026-09-28 07:12 | (本会话) | 复核远端内容与本地是否一致。 |
+    curl -sS -H "Authorization: token <新token>" -H "User-Agent: diag" \
+      "https://api.github.com/repos/ewfgwae/milkvduo256m/git/trees/main?recursive=1"
+    git ls-remote origin
+    |
+    结果: 远端 59 个 blob、truncated=false, 与本地逐项一致;
+    refs/heads/main = c26c1fc1d18b1528f00903aff38860687f288ce4(等于本地 HEAD)。
+    仓库地址: https://github.com/ewfgwae/milkvduo256m
+
+2026-09-28 07:14 | (本会话) | 收尾: 清掉临时脚本里残留的 token, 确认 git 配置干净。 |
+    cd /mnt/c/Users/1/AppData/Local/Temp
+    grep -l 'ghp_' m_*.sh | xargs rm -f
+    grep -c 'ghp_' "<仓库>/.git/config"      # 应为 0
+    |
+    结果: 临时目录已无 token 残留; .git/config 里没有 token(remote 存的是干净 URL)。
+    ★ 提醒: 过程中两个 token 都曾明文出现在对话里, 事后应到 GitHub 设置里吊销。
+
+2026-09-28 07:15 | (本会话) | 整理本目录: 原 readme.txt 改名为本文件 2026.9.28.txt;
+    另新写一份 readme.txt, 专门说明"这些指南该怎么写"(命名规则、两部分结构、
+    每条记录的格式、时间精度要求、安全铁律)。 |
+    # PC 侧仓库(实际执行):
+    Copy-Item docs\readme_board.txt sdcard\rootfs\root\指南\2026.9.28.txt
+    Remove-Item docs\readme_board.txt, sdcard\rootfs\root\指南\readme.txt
+    # 板上同步:
+    scp readme.txt 2026.9.28.txt root@192.168.42.1:/root/指南/
+    |
+    结果: /root/指南/ 下为 readme.txt(写法说明) + 2026.9.28.txt(本日记录)。
+    历史上取不到分钟时间的条目保持"只写日期", 未编造时间。
