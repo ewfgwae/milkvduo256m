@@ -58,15 +58,17 @@ image/duo256m-sdcard.img.gz.part-02   58 MiB
 image/CHECKSUMS.txt                   校验值（已验证与板子逐文件一致）
 ```
 
-镜像里的 `fip.bin` / `boot.sd` / `auto.sh` / `cvirtos.bin` / `lcd_sender` 已与板子实测
-md5 逐一比对一致，ext4 分区 `e2fsck -fn` 无错。
+镜像里的 `fip.bin` / `boot.sd` / `S99user` / `auto.sh` / `cvirtos.bin` / `lcd_sender`
+已与板子上的实测 md5 逐一比对一致，ext4 分区已用 `e2fsck -fy` 修复为干净状态。
+镜像取自板上那张卡的前 897 MiB，只把 `/root/指南/readme.txt` 更新为仓库里最新那一版
+（功能完全相同，只是多了最后一条“重启验证”记录）；完整校验值见 `image/CHECKSUMS.txt`。
 
 ### 2.1 合并 + 解压（WSL / Linux）
 
 ```bash
 cat duo256m-sdcard.img.gz.part-* > duo256m-sdcard.img.gz
 gunzip -k duo256m-sdcard.img.gz          # 得到 duo256m-sdcard.img（897 MiB）
-md5sum duo256m-sdcard.img.gz             # 应 = 03f8e97a82f7096db895baf02cd0ab62
+md5sum duo256m-sdcard.img.gz             # 应 = bcb713adbc7adf4fd9c5c2cd12437ac4
 ```
 
 ### 2.2 写卡
