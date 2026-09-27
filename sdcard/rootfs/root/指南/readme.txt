@@ -392,3 +392,21 @@
     boot.sd=7dd5a251414c10172e42a644f7177666(3338772)、auto.sh=d2f2084b8933889af89d801803978090、
     lcd_sender=2fcfe334988a4d578eb472978b3ddbee(5053208)、cvirtos.bin=a921a56507a896960e6dded0aa0d7887。
     整卡镜像(前 897 MiB, 含 MBR + p1 FAT 128M + p2 ext4 768M)见仓库 image/。
+
+2026-09-28 | (本会话) | 验证: 重启板子, 确认"开机自动热更 + 起监控"这条链路真的通。
+    做法: 板上 sync; reboot 后等 SSH 恢复, 再查 reload 日志、进程、小核探针。 |
+    sync; reboot
+    # 等约 40 秒后:
+    cat /tmp/lcd_reload.log
+    ps | grep lcd_sender
+    devmem 0x8fe6ce20 32     # [0] 'LVGL' 魔数
+    devmem 0x8fe6ce90 32     # [14] build id 应 = 0x484A0008
+    devmem 0x8fe6ce58 32     # [7] 帧率 x10
+    |
+    结果: uptime=0:01(确实重启过); /tmp/lcd_reload.log 完整 ——
+      "固件 /mnt/data/cvirtos.bin: 1640640 字节 = 应用区 1638400 + 常驻跳板 2240"
+      "/dev/mem 写入 + 读回校验通过"
+      "热更完成: 新固件已运行 (state=1, 200.1 ms)"
+    进程 279 root /mnt/data/lcd_sender mon 1000 在跑; 小核 build id=0x484A0008、tmoN=0、PIO=0、
+    frames 持续增长、fps_x10=0x4CC(122.8 FPS, 跑分动态场景)、cpu_sml=0x10/0x11(16~17%)。
+    即: 拔电重插(SD 卡启动)后无需任何人工操作, 屏幕自动进入 LVGL 跑分 + OSD 监控。

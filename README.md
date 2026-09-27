@@ -4,11 +4,12 @@ Milk-V **Duo256M**（SG2002）双核 LCD 监控小设备：**小核 C906L（Free
 **ST7789 240×320 SPI 屏**跑 LVGL，**大核 A53（Linux）** 把 CPU 占用率实时投到屏上做 OSD。
 
 - 小核：LVGL `lv_demo_benchmark` 跑分画面 + 右下角 OSD，半屏双缓冲 + **sysDMA 送显**，
-  跑分实测 **约 82 FPS**（240×320 / SPI ~46.8 MHz）。跑分跑完画面静止后，LVGL 只在脏区
-  变化时刷屏（每秒刷一次 OSD），小核 CPU 占用接近 0
+  实测 **80~125 FPS**（随跑分场景变化；240×320 / SPI ~46.8 MHz）。跑分跑完画面静止后，
+  LVGL 只在脏区变化时刷屏（每秒刷一次 OSD），小核 CPU 占用接近 0
 - 大核：`lcd_sender` 命令行工具（刷色/彩条/动画/背光/**热更小核固件**）
 - 大小核通讯：**IPCM mailbox（cmdqu）传命令** + **共享内存传像素**，不经过 Linux 的 spidev
 - 小核固件支持**热更**：改完只换一个 `cvirtos.bin`，不烧 `fip.bin`、不重启
+- 开机自启：`/etc/init.d/S99user` 调 `/mnt/data/auto.sh`，自动热更小核固件 + 起 CPU 监控
 
 ---
 
