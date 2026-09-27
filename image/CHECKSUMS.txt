@@ -1,0 +1,17 @@
+# duo256m-lcd-rtos / SD 卡镜像校验
+#
+# 合并: cat duo256m-sdcard.img.gz.part-* > duo256m-sdcard.img.gz
+# 解压: gunzip -k duo256m-sdcard.img.gz
+#
+# 合并后的 duo256m-sdcard.img.gz (206994804 字节):
+MD5(duo256m-sdcard.img.gz) = 03f8e97a82f7096db895baf02cd0ab62
+#
+# 解压后的 duo256m-sdcard.img (940572672 字节 = 897 MiB):
+#   含 MBR(0x55AA) + p1 FAT 128MiB(LBA 1) + p2 ext4 768MiB(LBA 262145)
+#   分区内关键文件的 md5 (已与板子实测值逐一比对一致):
+#     a5a5ca0109d98e238ac82c0aae6d175a  p1:/fip.bin                       (1928192 B)
+#     7dd5a251414c10172e42a644f7177666  p1:/boot.sd                       (3338772 B)
+#     d2f2084b8933889af89d801803978090  p2:/mnt/data/auto.sh              (1379 B)
+#     a921a56507a896960e6dded0aa0d7887  p2:/mnt/data/cvirtos.bin          (1640640 B)
+#     2fcfe334988a4d578eb472978b3ddbee  p2:/mnt/data/lcd_sender           (5053208 B)
+#     2a8f89d234e09bcd7e0e3ff7d2afe2db  p2:/etc/init.d/S99user            (2804 B)

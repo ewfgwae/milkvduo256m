@@ -1,0 +1,24 @@
+# 脚本一律 LF，别让 Windows 的 CRLF 把板上 sh 脚本搞坏
+* text=auto eol=lf
+*.sh text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.S text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.dts text eol=lf
+*.ld text eol=lf
+*.ini text eol=lf
+CMakeLists.txt text eol=lf
+Makefile text eol=lf
+
+# 二进制：不要做任何行尾/编码处理
+*.bin binary
+*.sd binary
+*.img binary
+*.gz binary
+*.part-* binary
+*.elf binary
+*_duo256m binary
+lvgl_demo binary
+lcd_sender binary
