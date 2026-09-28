@@ -6,28 +6,38 @@
 # --- 分卷 ---
 #   duo256m-sdcard.img.gz.part-00   73400320 B
 #   duo256m-sdcard.img.gz.part-01   73400320 B
-#   duo256m-sdcard.img.gz.part-02   60181885 B
+#   duo256m-sdcard.img.gz.part-02   58335504 B
 #
-# 合并后的 duo256m-sdcard.img.gz (206982525 字节):
-MD5(duo256m-sdcard.img.gz) = bcb713adbc7adf4fd9c5c2cd12437ac4
+# 合并后的 duo256m-sdcard.img.gz (205136144 字节):
+MD5(duo256m-sdcard.img.gz) = 191d92629ed0f166cc1035e69fff2e58
 #
 # 解压后的 duo256m-sdcard.img (940572672 字节 = 897 MiB):
+#   MD5(duo256m-sdcard.img) = 7ea064e272079da7ae560d0675abb20e
 #   含 MBR(0x55AA) + p1 FAT 128MiB(LBA 1) + p2 ext4 768MiB(LBA 262145)
 #   分区内关键文件的 md5 (均已与板子实测值逐一比对一致):
 #     a5a5ca0109d98e238ac82c0aae6d175a  p1:/fip.bin                       (1928192 B)
 #     7dd5a251414c10172e42a644f7177666  p1:/boot.sd                       (3338772 B)
 #     2a8f89d234e09bcd7e0e3ff7d2afe2db  p2:/etc/init.d/S99user            (1009 B)
 #     d2f2084b8933889af89d801803978090  p2:/mnt/data/auto.sh              (1379 B)
-#     a921a56507a896960e6dded0aa0d7887  p2:/mnt/data/cvirtos.bin          (1640640 B)
-#     2fcfe334988a4d578eb472978b3ddbee  p2:/mnt/data/lcd_sender           (5053208 B)
+#     83d256674534d98e4db8c91ed6e3efda  p2:/mnt/data/cvirtos.bin          (1640640 B)  [build 0x484A0009]
+#     4e9eb25c7e043271fb99c090b8f86aeb  p2:/mnt/data/lcd_sender           (5053208 B)
 #     a797f89ed36cc7ede61aa4bf71dfa9aa  p2:/mnt/system/ko/loadsystemko.sh (983 B)
-#     a6be582c431373a84b775d5e603bf501  p2:/root/指南/readme.txt          (26237 B)
-#     a921a56507a896960e6dded0aa0d7887  p2:/root/cvirtos.bin              (1640640 B)
-#     2fcfe334988a4d578eb472978b3ddbee  p2:/root/lcd_sender               (5053208 B)
+#     83d256674534d98e4db8c91ed6e3efda  p2:/root/cvirtos.bin              (1640640 B)
+#     4e9eb25c7e043271fb99c090b8f86aeb  p2:/root/lcd_sender               (5053208 B)
 #     3d737b6325ede2a9f2b8f9e2c2f45391  p2:/root/lvgl_demo                (1093864 B)
 #     e57549a2ec3d6fd2f27a6a7f24d62c1a  p2:/root/st7789_240x320_duo256m   (57080 B)
 #     9ce7eea0e4213b62d9244e730d81945d  p2:/root/st7789_buf163840_duo256m (57080 B)
 #     ffad8d031bb2b780267d7b1cc5fda92c  p2:/root/st7789_spi46875_duo256m  (57080 B)
+#     49c345f8ce7b522823b6d36d388e6c0a  p2:/root/指南/2026.9.28.txt       (57296 B)
+#     d5bfb2587c06b185a27eba2f3d4d7884  p2:/root/指南/readme.txt          (6419 B)
+#
+# 本次更新 (相对上一版 bcb713adbc7adf4fd9c5c2cd12437ac4):
+#   - p2:/root 与 p2:/mnt/data 的 cvirtos.bin 换成 0x484A0009 版 (83d25667...)
+#   - p2:/root 与 p2:/mnt/data 的 lcd_sender  换成新版      (4e9eb25c...)
+#   - p2:/root 清掉 13 个文件名内嵌 0x1C 控制符的监控残留文件 + 2 个旧固件实验文件
+#     (cvirtos.dma1.bin / cvirtos_484A0004.bin)
+#   - p2:/root/指南/ 换成最新 readme.txt (6419 B) 并新增 2026.9.28.txt (57296 B)
+#   - p1 (FAT) 里的 fip.bin / boot.sd 未改动 (逐字节不变)
 #
 # 校验方式(只读挂载, 不改动镜像):
 #   losetup -fP --show duo256m-sdcard.img

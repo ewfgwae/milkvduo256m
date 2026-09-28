@@ -180,27 +180,82 @@
   2) 全程不动 fip.bin, 不重启系统, 不存在变砖路径。
   3) 只有极特殊情况(见 5.3)才需要重烧 fip。
 
-5.1 小核固件热更(日常唯一做法)
+5.1 小核固件热更(日常唯一做法) —— 完整流程
 --------------------------------------------------------------------------------
-  1) 板上一条命令:
-       /root/lcd_sender rtos /root/cvirtos.bin
-  2) 完整流程(本机 -> 板子):
-       # 1) 本机重新编译小核固件
-       cd ~/duo-sdk-v2 && source build/envsetup_milkv.sh milkv-duo256m-glibc-arm64-sd
-       cd build && make rtos
-       # 2) 推上去
-       scp ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin root@192.168.42.1:/root/cvirtos.bin
-       # 3) 板上热更
-       ssh root@192.168.42.1 '/root/lcd_sender rtos /root/cvirtos.bin'
-  3) 正常输出:
+  1) 一句话: 把新 cvirtos.bin 传到板上 /root, 板上跑一条 lcd_sender rtos。
+     不碰 fip.bin、不重启系统、不存在变砖路径(为什么安全见 5.2)。
+  2) ★ 动手前必看: 先清空 IPCM 邮箱那 8 个槽位, 再动手热更。
+     2026-09-28 07:53 实测: 即使清了槽, 也照样失败, 报
+       "小核 3s 内未进入跳板 (reload_ack=0 state=1)"
+     —— 看着像小核卡死, 其实小核活得好好的(loop 在涨、buildid 正常), 而是命令
+     根本没送到小核: 邮箱只有 8 槽(0x1900400 起, 每槽 8 字节), 被开机 auto.sh 起的
+     `/mnt/data/lcd_sender mon 1000` 灌满后, 小核那一侧的消费端也会一起堵住,
+     这时光清硬件槽是救不回来的, 只能重启板子(见本条 6c, 机理见 6.1)。
+     dmesg 判据: "No valid mailbox is available" + "RTOS_CMDQU_SEND_WAIT timeout"。
+  3) 完整流程(每步都能单独验证, [PC/WSL] 与 [板子] 别搞混):
+       a) [PC/WSL] 编固件:
+            cd ~/duo-sdk-v2/freertos/cvitek/build/task
+            cmake --build . --target install ; cmake --build . --target cvirtos.bin
+            产物: /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin
+            ★ 改过 lv_conf.h 这类头文件, 要强制全量重编 lvgl(见 6.3)。
+       b) [PC/WSL] 传上去 —— ★★ 这两行只能在 WSL 里跑, 因为 /home/chen 是 WSL
+          内部路径; 在 Windows PowerShell 里直接跑会报
+            scp.exe: stat local "/home/chen/...": No such file or directory
+          (Windows 的 scp.exe 看不到 WSL 的文件系统)。要么先 `wsl -d Ubuntu-22.04`
+          进 shell, 要么给命令加前缀 `wsl -d Ubuntu-22.04 `。
+            scp /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
+                root@192.168.42.1:/root/cvirtos.bin
+       c) [板子] 停后台监控:
+            killall lcd_sender
+            ★ 用 killall(发 SIGTERM 让它自己收尾); 不要 kill -9, 否则会留下
+              "孤儿回执"永久占着槽位(见 6.1)。
+       d) [板子] 清 8 个槽位:
+            i=0; while [ $i -lt 8 ]; do devmem $((0x1900400+i*8)) 64 0; i=$((i+1)); done
+            ★ 这条粘贴时容易出事: 有的终端会把 0x1900400 拆成 "0 x1900400",
+              于是报 `syntax error: unexpected word`。稳妥做法见本条 5)。
+       e) [板子] 热更:
+            /root/lcd_sender rtos /root/cvirtos.bin
+            退出码 0 = 成功(板上用 `echo $?` 拿, 别靠肉眼)。
+       f) [板子] 落盘, 保证下次开机 auto.sh 用的是这一版:
+            cp -f /root/cvirtos.bin /mnt/data/cvirtos.bin
+            cp -f /root/lcd_sender  /mnt/data/lcd_sender ; chmod 755 /mnt/data/lcd_sender
+            ★ tools/deploy.sh 只把 lcd_sender 拷进 /mnt/data, 不拷 cvirtos.bin,
+              所以走脚本后还要自己补第一条 cp。
+  4) 正常输出(2026-09-28 07:55 实测):
        固件 /root/cvirtos.bin: 1640640 字节 = 应用区 1638400 + 常驻跳板 2240 (跳板不重写)
+       无条件重写应用区 (不比较内容, 与在跑的版本相同也照写)
        小核已停在跳板 (0.0 ms), 开始往 0x8FE00000 写 1638400 字节
        /dev/mem 写入 + 读回校验通过
        已置 ctrl.reload=0x484F544A, 等新固件启动...
-       热更完成: 新固件已运行 (state=1, ~200 ms)        <- 退出码 0 = 成功
-  4) 验证(隔几秒各读两次, 地址随固件变, 见 4.5):
-       devmem 0x8fe6cb30 32     # [2] 主循环圈数在涨 = 新固件在跑
-       devmem 0x8fe6cb90 32     # [14] 应等于本次固件的 build id
+       热更完成: 新固件已运行 (state=1, 200.1 ms)        <- 退出码 0 = 成功
+     ★ 本命令不看新旧固件内容是否相同, 一律整篇重写 —— 内容一样也照写,
+       等价于"不重启板子的小核软复位"。
+  5) 防粘贴踩坑: 把清槽那段写成板上的小脚本, 以后直接调:
+       cat > /root/clr.sh <<'EOF'
+       i=0
+       while [ $i -lt 8 ]; do
+       	devmem $((0x1900400 + i * 8)) 64 0
+       	i=$((i + 1))
+       done
+       echo slots-cleared
+       EOF
+       chmod +x /root/clr.sh
+     之后热更就是:  /root/clr.sh && /root/lcd_sender rtos /root/cvirtos.bin
+  6) 失败判定与恢复(按顺序试):
+       a) 输出 "小核 3s 内未进入跳板 (reload_ack=0 state=1)" = 小核没收到命令。
+       b) 清槽(上面 d) 那条), 再用 ping 验通道是否真的通了:
+            /root/lcd_sender ping
+            dmesg | tail -5        # 还有 "No valid mailbox is available" 就是没通
+          ★ 注意: 只清槽不一定够 —— 小核内部的命令队列要是也堵了, 硬件槽清空
+            也救不回来。
+       c) 通道仍不通 -> 重启板子, 这是唯一可靠的办法:
+            sync ; reboot
+          约 40 秒后回来, 开机 auto.sh 会自动热更 /mnt/data 里那版固件。
+          实测对照: 07:53 未清槽直接热更 -> 失败; 07:54 重启 -> 07:55 同样命令
+          一次成功(exit=0)。
+  7) 验证(地址随固件变, 当前 build 0x484A0009 的地址见 4.5):
+       devmem 0x8fe6ce30 32     # [2] 主循环圈数, 隔 3 秒再读应明显变大
+       devmem 0x8fe6ce90 32     # [14] build id, 应等于本次烧进去的
 
 5.2 内存布局(热更为什么安全)
 --------------------------------------------------------------------------------
@@ -251,6 +306,12 @@
        b) 只有卡死才用 `killall -9 lcd_sender`, 且用完务必先清槽位再热更。
   5) 查看槽位占用(每槽 8 字节, 非 0 即占用; 正常空闲时全 0):
        devmem 0x1900400 64 ; devmem 0x1900408 64 ; ... ; devmem 0x1900438 64
+  6) ★ 2026-09-28 补充(实测): 更大的推手其实是开机 auto.sh 起的
+     /mnt/data/lcd_sender mon 1000 —— 它持续发 MON 命令, 开机仅 31 秒 8 个槽位就
+     全满了, 此后 ping 报 "No buffer space available"、热更报 reload_ack=0。
+     而且这时"清 8 槽"往往救不回来(小核那一侧的消费端也一起堵了), 唯一可靠的办法是
+       sync ; reboot
+     所以热更前的标准动作是: 先 killall lcd_sender -> 清 8 槽 -> 再热更(见 5.1)。
 
 6.2 小核 sysDMA 自检探针
 --------------------------------------------------------------------------------
@@ -693,3 +754,85 @@
        md5sum /root/指南/readme.txt /root/指南/2026.9.28.txt
   5) 结果: 板上 md5 与本地逐字节一致; 远端 main = 521806e(后随本次重排再推一次)。
   6) 说明: 本条跨了几分钟(改动、推送、重排、同步是连续做的), 故写成时间范围而不是单点。
+
+--------------------------------------------------------------------------------
+2026-09-28 07:42 ~ 07:47 | (本会话) | 改代码 -> 编出 0x484A0009 -> 重启后首次热更成功
+--------------------------------------------------------------------------------
+  1) 做了什么(三处改动):
+       a) src/big_core/lcd_sender.c : 热更处加一行打印, 把"无条件整篇重写、不比较
+          内容、与在跑的版本相同也照写"写成显式行为。
+       b) task/lvgl/lv_conf.h       : LV_DISP_DEF_REFR_PERIOD 8 -> 1 (ms),
+          帧率上限由 125fps 提到 1000fps。
+       c) task/lvgl/lvgl_task.c     : LVGL_PROBE_BUILD_ID 0x484A0008 -> 0x484A0009。
+  2) 完整命令(编译, 在 WSL 里以 root 跑):
+       export PATH=/home/chen/duo-sdk-v2/host-tools/gcc/riscv64-elf-x86_64/bin:$PATH
+       cd /home/chen/duo-sdk-v2/freertos/cvitek/build/task
+       cmake --build . --target lvgl          # lv_conf.h 变了, 先单独重建静态库
+       cp -f lvgl/liblvgl.a /home/chen/duo-sdk-v2/freertos/cvitek/install/lib/liblvgl.a
+       cmake --build . --target install
+       cmake --build . --target cvirtos.bin
+       aarch64-linux-gnu-gcc -O2 -Wall -static -I/home/chen/lcdhost \
+           -o /home/chen/lcdhost/lcd_sender /home/chen/lcdhost/lcd_sender.c
+  3) 结果: cvirtos.bin 1640640 字节, md5 83d256674534d98e4db8c91ed6e3efda;
+     lcd_sender 5053208 字节, md5 4e9eb25c7e043271fb99c090b8f86aeb;
+     跳板末 2240 字节 md5 仍为 205ead534d848aea08b4e4cf2a03a8f1(与上一版逐字节相同,
+     所以这次热更是安全的); 探针地址未变, g_lvgl_probe 仍是 0x8fe6ce20。
+  4) 做了什么(上板): 先重启板子避开已经堵住的邮箱 -> scp 两个文件到 /root ->
+     killall lcd_sender -> 清 8 槽 -> rtos 热更 -> 落盘 /mnt/data。
+  5) 结果: 热更 exit=0, 200.1 ms; buildid 读出 0x484A0009; loop 持续增长。
+     (这次部署脚本没打印时间戳, 所以本条写成区间; 编译产物的 mtime 是 07:42。)
+  6) 教训: 改 lv_conf.h 这类被全库 include 的头文件, 必须逼 lvgl 全量重编;
+     但不要删 install/lib/liblvgl.a —— 那是 ninja 的依赖产物, 删了会直接报
+     "missing and no known rule to make it" 而中断整个 install。正确顺序是先单独
+     build lvgl 目标, 补回 install/lib 下的 .a, 再走 install。
+
+--------------------------------------------------------------------------------
+2026-09-28 07:53 | (本会话) | 重烧失败 —— 复现 reload_ack=0, 并用证据排除"小核卡死"
+--------------------------------------------------------------------------------
+  1) 做了什么: 清了 8 个槽位之后执行热更。
+  2) 完整命令:
+       i=0; while [ $i -lt 8 ]; do devmem $((0x1900400+i*8)) 64 0; i=$((i+1)); done
+       /root/lcd_sender rtos /root/cvirtos.bin
+  3) 结果: 失败, 输出 "小核 3s 内未进入跳板 (reload_ack=0 state=1)", 退出码 1。
+  4) 证据(说明小核没死, 是通道坏了):
+       devmem 0x8fe6ce90 32  -> 0x484A0009   小核跑的就是目标版本
+       devmem 0x8fe6ce30 32  -> 0x000539A9, 3 秒后 0x00054582   主循环在涨
+       devmem 0x1900400 64   -> 0x0000000000014706   槽里躺着一条 cmd=0x47
+                               (LCD_CMD_RTOS_RELOAD), 小核压根没消费
+       devmem 0x1900408 64   -> 0x0000000000014406   一条 cmd=0x44(PING)同样没消费
+       dmesg                 -> "No valid mailbox is available" 与
+                                "RTOS_CMDQU_SEND_WAIT timeout" 每约 1 秒成对出现
+  5) 教训: 见到 reload_ack=0 不要立刻断定"小核卡死"或"固件不认这条命令" ——
+     先读 loop 计数器和 buildid, 再看 dmesg 和 8 个槽位, 才能区分"小核死了"和
+     "邮箱堵了"。
+
+--------------------------------------------------------------------------------
+2026-09-28 07:54 ~ 07:55 | (本会话) | 重启后重烧一次成功, 定位根因: 开机 mon 灌满邮箱
+--------------------------------------------------------------------------------
+  1) 做了什么: 按要求"重新烧录一遍" —— 先重启板子, 再完整走一遍 5.1 的流程。
+  2) 完整命令:
+       # [WSL] 重启并等板子回来
+       setsid ssh <SSHOPT> root@192.168.42.1 'sync; reboot' ; sleep 40
+       # [WSL] 传新固件(必须在 WSL 里跑)
+       setsid scp <SSHOPT> /home/chen/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
+           root@192.168.42.1:/root/cvirtos.bin
+       setsid scp <SSHOPT> /home/chen/lcdhost/lcd_sender root@192.168.42.1:/root/lcd_sender
+       # [板子] 停监控 -> 清槽 -> 热更 -> 落盘
+       killall lcd_sender
+       i=0; while [ $i -lt 8 ]; do devmem $((0x1900400+i*8)) 64 0; i=$((i+1)); done
+       /root/lcd_sender rtos /root/cvirtos.bin
+       cp -f /root/cvirtos.bin /mnt/data/cvirtos.bin
+       cp -f /root/lcd_sender /mnt/data/lcd_sender ; chmod 755 /mnt/data/lcd_sender
+  3) 关键观察(开机仅 31 秒时做的自检): 8 个槽位已经全满; `ps` 里有
+     /mnt/data/lcd_sender mon 1000(auto.sh 开机起的); ping 直接报
+       "ioctl RTOS_CMDQU_SEND: No buffer space available"
+     根因就在这里: 开机后 mon 持续发 MON 命令, 小核侧消费不过来, 槽位很快被占满,
+     之后所有命令(含热更)都发不出去。
+  4) 结果: 清槽后热更一次成功, exit=0, 输出 "热更完成: 新固件已运行 (state=1, 200.1 ms)";
+     探针 buildid = 0x484A0009; /root 与 /mnt/data 的 cvirtos.bin md5 都是
+     83d256674534d98e4db8c91ed6e3efda, lcd_sender 都是
+     4e9eb25c7e043271fb99c090b8f86aeb。
+  5) 对照结论: 07:53"清槽后仍失败" vs 07:55"重启后同样命令成功" —— 说明堵在小核
+     那一侧, 光清硬件槽不够, 只能重启。
+  6) 待办/建议: mon 的采样周期和"开机就常驻"这两点值得重新考虑(它是邮箱被灌满的
+     直接推手); 在那之前, 热更前一律先 killall + 清槽(写进 5.1 了)。

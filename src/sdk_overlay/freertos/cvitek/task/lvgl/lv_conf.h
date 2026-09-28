@@ -95,7 +95,9 @@
  *====================*/
 
 /*Default display refresh period. LVG will redraw changed areas with this period time*/
-#define LV_DISP_DEF_REFR_PERIOD 8 /*[ms]*/
+/* 帧率上限 = 1000 / 本周期(ms): 原来是 8ms -> 顶在 125fps, 改成 1ms -> 上限 1000fps。
+ * 和小核主循环 LVGL_HANDLER_PERIOD_MS(1ms = 1000Hz) 对齐, 谁都不再是瓶颈。 */
+#define LV_DISP_DEF_REFR_PERIOD 1 /*[ms] -> 帧率上限 1000fps*/
 
 /*Input device read period in milliseconds*/
 #define LV_INDEV_DEF_READ_PERIOD 30     /*[ms]*/

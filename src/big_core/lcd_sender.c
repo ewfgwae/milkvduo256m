@@ -521,6 +521,11 @@ static int do_rtos(const char *path)
 		       (unsigned long)(RTOS_APP_MAX - len));
 	}
 
+	/* 无条件整篇重写: 不比较新固件与芯片上正在跑的那版是否相同 —— 内容一样也
+	 * 照样把整个应用区覆盖一遍, 并让小核从 _start 重跑, 等价于"不重启板子的小核
+	 * 软复位"。所以这里绝不因为"版本相同"而跳过, 这是本命令的既定行为。 */
+	printf("无条件重写应用区 (不比较内容, 与在跑的版本相同也照写)\n");
+
 	/* 1) 清握手, 再发命令让小核跳进常驻跳板 */
 	g_shm->ctrl.reload     = 0;
 	g_shm->stat.reload_ack = 0;

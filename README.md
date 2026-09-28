@@ -54,21 +54,23 @@ gzip 后分卷存放（避开 GitHub 单文件 100MB 限制）：
 ```
 image/duo256m-sdcard.img.gz.part-00   70 MiB
 image/duo256m-sdcard.img.gz.part-01   70 MiB
-image/duo256m-sdcard.img.gz.part-02   58 MiB
+image/duo256m-sdcard.img.gz.part-02   56 MiB
 image/CHECKSUMS.txt                   校验值（已验证与板子逐文件一致）
 ```
 
 镜像里的 `fip.bin` / `boot.sd` / `S99user` / `auto.sh` / `cvirtos.bin` / `lcd_sender`
 已与板子上的实测 md5 逐一比对一致，ext4 分区已用 `e2fsck -fy` 修复为干净状态。
-镜像取自板上那张卡的前 897 MiB，只把 `/root/指南/readme.txt` 更新为仓库里最新那一版
-（功能完全相同，只是多了最后一条“重启验证”记录）；完整校验值见 `image/CHECKSUMS.txt`。
+镜像取自板上那张卡的前 897 MiB，本次更新做了三件事：① 换入 **0x484A0009** 版小核
+固件与新版 `lcd_sender`；② 清掉 `/root` 下的一批垃圾文件（文件名内嵌控制字符的
+监控残留 + 两个旧固件实验文件）；③ 把 `/root/指南/` 换成最新 `readme.txt` 并补上
+`2026.9.28.txt`。完整校验值见 `image/CHECKSUMS.txt`。
 
 ### 2.1 合并 + 解压（WSL / Linux）
 
 ```bash
 cat duo256m-sdcard.img.gz.part-* > duo256m-sdcard.img.gz
 gunzip -k duo256m-sdcard.img.gz          # 得到 duo256m-sdcard.img（897 MiB）
-md5sum duo256m-sdcard.img.gz             # 应 = bcb713adbc7adf4fd9c5c2cd12437ac4
+md5sum duo256m-sdcard.img.gz             # 应 = 191d92629ed0f166cc1035e69fff2e58
 ```
 
 ### 2.2 写卡

@@ -73,7 +73,7 @@ extern void sysdma_selftest(void);
 /* 每改一版小核固件就把这里 +1: 免烧热更(见 hotjump.S / lcd_sender rtos)之后
  * 用 `devmem <g_lvgl_probe+0x70> 32` 一眼就能确认芯片上跑的到底是哪一版
  * (g_lvgl_probe 的地址随固件体积变化, 用 nm cvirtos.elf | grep g_lvgl_probe 查)。 */
-#define LVGL_PROBE_BUILD_ID     0x484A0008UL        /* 'HJ' + 序号 */
+#define LVGL_PROBE_BUILD_ID     0x484A0009UL        /* 'HJ' + 序号 */
 volatile unsigned long g_lvgl_probe[16];
 
 /* ==================== 运行时间统计的计数源 ============================
