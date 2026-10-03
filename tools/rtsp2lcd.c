@@ -230,10 +230,11 @@ static int rb_fill(void)
 	}
 
 	before = g_rlen;
-	while (g_rlen == before && !g_rd_eof) {
+	while (g_rlen == before && !g_rd_eof && !g_exit) {
 		clock_gettime(CLOCK_REALTIME, &ts);
 		ts.tv_sec += 5;
 		if (pthread_cond_timedwait(&g_rcv, &g_rlk, &ts) == ETIMEDOUT) {
+			if (g_exit) break;
 			stalled += 5;
 			printf("  [net] 停顿 %ds 无数据(g_rlen=%d), 继续等\n",
 			       stalled, g_rlen);
@@ -244,6 +245,10 @@ static int rb_fill(void)
 	n = g_rlen - before;
 	pthread_mutex_unlock(&g_rlk);
 
+	/* ★ 被 SIGTERM/SIGINT 叫停时必须能从等待里出来, 否则 killall 杀不掉 ——
+	 *   流一停这里就永久阻塞, 实测表现为 longrun.sh 的 `wait` 永远收不了尾。
+	 *   调用点把 <0 当"结束", 主循环再按 g_exit 区分是不是用户主动停的。 */
+	if (g_exit && n <= 0) return -1;
 	if (n > 0) { g_rd_cnt++; return n; }
 	return 0;                                /* 能走到这里只可能是 g_rd_eof */
 }
@@ -266,10 +271,11 @@ static void *rb_thread(void *arg)
 				int space = (int)sizeof(g_rbuf) - g_rlen;
 				int chunk;
 
-				while (space <= 0) {     /* 缓冲满: 等主线程压缩腾地方 */
+				while (space <= 0 && !g_exit) {  /* 缓冲满: 等主线程压缩腾地方 */
 					pthread_cond_wait(&g_rsp, &g_rlk);
 					space = (int)sizeof(g_rbuf) - g_rlen;
 				}
+				if (space <= 0) break;   /* g_exit 且缓冲仍满: 剩下的丢掉, 直接收工 */
 				chunk = (n - off < space) ? (n - off) : space;
 				memcpy(g_rbuf + g_rlen, g_stage + off, (size_t)chunk);
 				g_rlen += chunk;
@@ -277,13 +283,17 @@ static void *rb_thread(void *arg)
 			}
 			pthread_cond_broadcast(&g_rcv);
 			pthread_mutex_unlock(&g_rlk);
+			if (g_exit) break;
 			continue;
 		}
 
 		/* n == 0 = 对端正常关闭; n < 0 要区分"超时"和"真出错" */
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
 			      errno == EINTR)) {
+			int stop = g_exit;
+
 			pthread_mutex_unlock(&g_rlk);
+			if (stop) break;             /* 被 SIGTERM 叫停: 收工 */
 			continue;                    /* 这一轮没数据而已, 接着等 */
 		}
 		g_rd_eof = 1;
@@ -1296,9 +1306,16 @@ int main(int argc, char **argv)
 			t_nal += d;
 			if (d > mx_nal) mx_nal = d;
 			if (r != 0) {
-				printf("流结束/断开(已取 %d 个 NAL)\n", g_nal_cnt);
-				dbg("流结束/断开: NAL=%d recv=%d eof=%d err=%d 共收 %lu 字节",
-				    g_nal_cnt, g_rd_cnt, g_rd_eof, g_rd_err, g_rd_bytes);
+				if (g_exit) {
+					printf("收到退出信号, 正常收工(已取 %d 个 NAL)\n",
+					       g_nal_cnt);
+					dbg("退出信号: NAL=%d recv=%d 共收 %lu 字节",
+					    g_nal_cnt, g_rd_cnt, g_rd_bytes);
+				} else {
+					printf("流结束/断开(已取 %d 个 NAL)\n", g_nal_cnt);
+					dbg("流结束/断开: NAL=%d recv=%d eof=%d err=%d 共收 %lu 字节",
+					    g_nal_cnt, g_rd_cnt, g_rd_eof, g_rd_err, g_rd_bytes);
+				}
 				break;
 			}
 		}

@@ -22,3 +22,4 @@ Makefile text eol=lf
 *_duo256m binary
 lvgl_demo binary
 lcd_sender binary
+rtsp2lcd binary

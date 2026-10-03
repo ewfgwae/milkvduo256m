@@ -9,7 +9,7 @@ Milk-V **Duo256M**（SG2002）双核 LCD 监控小设备：**小核 C906L（Free
 - 大核：`lcd_sender` 命令行工具（刷色/彩条/动画/背光/**热更小核固件**）
 - 大小核通讯：**IPCM mailbox（cmdqu）传命令** + **共享内存传像素**，不经过 Linux 的 spidev
 - 小核固件支持**热更**：改完只换一个 `cvirtos.bin`，不烧 `fip.bin`、不重启
-- 开机自启：`/etc/init.d/S99user` 调 `/mnt/data/auto.sh`，自动热更小核固件 + 起 CPU 监控
+- 开机自启：`/etc/init.d/S99user` 调 `/mnt/data/auto.sh`，自动热更小核固件（**不再起 CPU 监控 `mon`**，它会和摄像头推屏抢 cmdqu）
 
 ---
 
@@ -93,7 +93,21 @@ cd image
 cmd /c copy /b duo256m-sdcard.img.gz.part-00+duo256m-sdcard.img.gz.part-01+duo256m-sdcard.img.gz.part-02 duo256m-sdcard.img.gz
 ```
 
-插卡上电，屏幕应立即显示 LVGL 界面 + CPU 占用率 OSD。
+插卡上电，屏幕应该是**纯黑底 + 右下角一块 OSD 小字**（不再有跑分 demo）。
+想看到摄像头画面，得再跑大核的 `rtsp2lcd`，见第 6.5 节。
+
+> ★ 上面这份整卡镜像里的 `cvirtos.bin` 还是**带 demo 的旧版**（早于 build `0x484A000B`）。
+> 所以第一次上电（或任何一次卡上 `/mnt/data/cvirtos.bin` 仍是旧版的开机），屏上还会先出
+> 一次跑分 demo。想要开箱即黑屏，刷完卡把 `sdcard/rootfs/mnt/data/cvirtos.bin` 和
+> `sdcard/rootfs/root/cvirtos.bin` 这两个文件拷进 p2 分区的对应位置即可（`auto.sh`
+> 每次开机都会拿 `/mnt/data/cvirtos.bin` 热更小核，不用重刷镜像、不用动 fip.bin）。
+> 已经开着的板子可以当场换：
+>
+> ```bash
+> scp sdcard/rootfs/mnt/data/cvirtos.bin root@192.168.42.1:/mnt/data/cvirtos.bin.new
+> ssh root@192.168.42.1 'mv -f /mnt/data/cvirtos.bin.new /mnt/data/cvirtos.bin; sync'
+> ssh root@192.168.42.1 '/root/lcd_sender rtos /mnt/data/cvirtos.bin'   # 立刻生效, 不必重启
+> ```
 
 > 卡的容量：镜像只有 897 MiB，**任何 ≥1GB 的卡都能写**（写完整卡会多出未分配空间，
 > 不影响启动；想用完剩余空间可用 `cfdisk`/`parted` 扩 p2 后再 `resize2fs`）。
@@ -108,8 +122,8 @@ cmd /c copy /b duo256m-sdcard.img.gz.part-00+duo256m-sdcard.img.gz.part-01+duo25
 |---|---|---|
 | `sdcard/boot/fip.bin` | FAT 分区（p1，`/boot`） | FSBL + u-boot + 小核固件（BLCP_2ND 段）+ 常驻热更跳板 |
 | `sdcard/boot/boot.sd` | FAT 分区（p1，`/boot`） | Linux 内核 + 设备树（含 SPI2 的 DMA 请求线映射） |
-| `sdcard/rootfs/mnt/data/auto.sh` | ext4 分区（p2）`/mnt/data/` | 开机自启：热更小核固件 + 起 CPU 监控 |
-| `sdcard/rootfs/mnt/data/cvirtos.bin` | ext4 分区（p2）`/mnt/data/` | 小核固件（build id `0x484A0008`），开机时热更进小核 |
+| `sdcard/rootfs/mnt/data/auto.sh` | ext4 分区（p2）`/mnt/data/` | 开机自启：热更小核固件（**不再起 `mon`**，见 6.1 的注） |
+| `sdcard/rootfs/mnt/data/cvirtos.bin` | ext4 分区（p2）`/mnt/data/` | 小核固件（build id `0x484A000B`，md5 `53f6b679…`），**每次开机 auto.sh 自动热更进小核** |
 | `sdcard/rootfs/mnt/data/lcd_sender` | ext4 分区（p2）`/mnt/data/` | 大核 aarch64 静态程序（含 `rtos` 热更子命令） |
 | `sdcard/rootfs/root/*` | ext4 分区（p2）`/root/` | 同一批文件的副本 + 大核用户态例子，供手动调试 |
 | `sdcard/rootfs/etc/init.d/S99user` | ext4 分区（p2）`/etc/init.d/` | 原厂启动脚本（**未改**），它负责调用 `/mnt/data/auto.sh` |
@@ -157,7 +171,8 @@ duo256m-lcd-rtos/
 └── tools/                     一键脚本（见第 5 节）
     ├── rtsp2lcd.c             ★ 摄像头画面实时上屏：RTSP 收流 + 硬件 H.264 解码 + 送共享内存
     ├── build_rtsp2lcd.sh      编 rtsp2lcd（带空格的路径先镜像到无空格目录再编）
-    ├── lcdcam.sh              板上常驻脚本：断线自动重连（部署为 /root/lcdcam.sh）
+    ├── lcdcam.sh              板上常驻脚本：断线重连 + 收掉 mon + ENOBUFS 自愈
+    │                          （部署为 /root/lcdcam.sh，带 stop/stopall 子命令）
     ├── probe.sh               读小核探针并打印
     ├── longrun.sh             长跑 + 定时采样探针
     ├── deploy_big.sh          取回产物 → 停旧进程 → 覆盖 → 校验 md5
@@ -277,11 +292,18 @@ cd duo-examples && source envsetup.sh          # 选 2 = Duo256M，选 riscv/arm
   └─ /mnt/system/ko/loadsystemko.sh
   └─ /mnt/data/auto.sh        (本工程)
        ├─ killall lcd_sender ; 清 8 个 IPCM 槽位
-       ├─ lcd_sender rtos /mnt/data/cvirtos.bin    # 热更小核固件
-       └─ lcd_sender mon 1000 &                    # 每秒采样大核 CPU 占用率发给小核
+       └─ lcd_sender rtos /mnt/data/cvirtos.bin    # 热更小核固件
 ```
 
-日志：`/tmp/lcd_reload.log`（热更）、`/tmp/lcd_mon.log`（监控）。`/tmp` 是 tmpfs，重启清空。
+日志：`/tmp/lcd_reload.log`（热更）。`/tmp` 是 tmpfs，重启清空。
+
+> ★ **`auto.sh` 不再起 `lcd_sender mon`（2026-10-03 起）**：`mon` 和摄像头推屏
+> `rtsp2lcd` 都走同一条 cmdqu 通道，**一起跑会把 8 个槽位打满**，之后所有发送永久
+> 报 `No buffer space available`，且**不自愈**（杀 `mon`、只清槽位内存都没用），
+> 唯一解药是热更一次小核固件。屏上的表现是**画面定格在最后一帧**，而探针里
+> `[16]=1`、`[11]≈2.61M`、`[18]` 都还在涨 —— 只有 `[17] 大核提交帧号`不动。
+> 要看 CPU/帧率 OSD 就手动跑 `/mnt/data/lcd_sender mon 1000`，且**必须先停掉 rtsp2lcd**。
+> 详见指南 8.7。
 
 整套功能 = 3 个文件：`/boot/fip.bin`、`/boot/boot.sd`、`/mnt/data/{auto.sh,cvirtos.bin,lcd_sender}`。
 
@@ -292,6 +314,9 @@ cd duo-examples && source envsetup.sh          # 选 2 = Duo256M，选 riscv/arm
 ```bash
 ssh root@192.168.42.1 '/root/lcd_sender ping'
 ```
+
+> 注：摘掉 `mon` 后，OSD 里由 `mon` 送来的那几项（A53/C906 占用率）不会再刷新；
+> 画面本身和小核自算的帧率不受影响。
 
 ### 6.2 `lcd_sender` 子命令
 
@@ -304,7 +329,7 @@ ssh root@192.168.42.1 '/root/lcd_sender ping'
 | `lcd_sender fill 0xF800` | 整屏纯色（RGB565） |
 | `lcd_sender bars` | 画 8 条彩条 |
 | `lcd_sender anim 300` | 移动白条，局部刷新，跑 300 帧 |
-| `lcd_sender mon 1000` | 每秒采样 `/proc/stat`，把大核 CPU 占用率发给小核 OSD，并接回小核占用率与帧率 |
+| `lcd_sender mon 1000` | 每秒采样 `/proc/stat`，把大核 CPU 占用率发给小核 OSD，并接回小核占用率与帧率。★ **和 `rtsp2lcd` 互斥，见 6.1 的注** |
 | `lcd_sender rtos <固件>` | **热更小核固件**（见 5.4） |
 
 ### 6.3 读小核探针（确认屏上跑的是哪一版、有没有掉帧）
@@ -337,7 +362,11 @@ ssh root@192.168.42.1 '/root/lcd_sender ping'
 |---|---|---|
 | `0x484A0008` | `0x8fe6ce20` | 帧率修复版 |
 | `0x484A000A` | `0x8fe6cfe0` | 带 `LCD_CMD_CAM` 画面模式（屏上仍有跑分 demo） |
-| `0x484A000B` | 编译后重查 | 去掉 `lv_demo_benchmark`，上电纯黑屏 |
+| `0x484A000B` | `0x8fe544a0` | 去掉 `lv_demo_benchmark`：上电纯黑屏 + 右下角 OSD，画面只由大核点播 |
+
+★ 去 demo 那版把 `.bss` 整段挪了位，**地址一下跳了 ~90KB**。还按老地址读会得到一片垃圾，
+很容易误判成"固件没起来"。板上 `/root/probe.sh` 里 `P=` 就是基址，换固件后改这里；
+也可临时覆盖：`PROBE_BASE=0x8fe6cfe0 sh /root/probe.sh`。
 
 ```bash
 devmem 0x8fe6ce90 32      # build id
@@ -394,13 +423,19 @@ LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd \
     /root/rtsp2lcd rtsp://127.0.1.1/h264
 ```
 
-嫌麻烦就用常驻脚本（缺取流服务会自己拉起，`rtsp2lcd` 退了 2 秒后自动重连）：
+嫌麻烦就用常驻脚本 —— 它会自己拉起取流服务、断线重连，并且**两级自愈**
+（取流服务死了自动重拉；cmdqu 被打满自动热更复位）：
 
 ```bash
 nohup sh /root/lcdcam.sh >/dev/null 2>&1 &   # 后台常驻
 tail -f /tmp/lcdcam.log                      # 看状态
-killall lcdcam.sh rtsp2lcd                   # 停
+sh /root/lcdcam.sh stop                      # 停推送（循环 + rtsp2lcd）
+sh /root/lcdcam.sh stopall                   # 连取流服务一起收
 ```
+
+> ★ 别用 `killall lcdcam.sh` —— 这个进程的 argv[0] 是 `sh`，名字对不上，**打不中它**。
+> 本板也没有 `pkill`。要停就用上面的 `stop` 子命令（它会扫 `/proc` 兜底）。
+> 另外跑之前先 `pidof lcd_sender` 确认没有 `mon` 在跑，它会和推屏抢 cmdqu。
 
 编 `rtsp2lcd`（在 WSL 里；脚本会先把带空格的仓库镜像到无空格的 `~/wbrepo` 再编）：
 
@@ -412,8 +447,15 @@ bash ~/wb_build_big.sh        # 产物 ~/wbbuild/rtsp2lcd
 头用 `duo-tdl-examples/include/system`、库用板上原版的 `~/boardlibs`，
 链接 `-lvdec -lsys -lpthread -lrt -lm`。
 
-实测：长跑 4 分钟 **7298 帧、0 次断流、稳定 30fps**。RTSP 服务端的四个 quirk、
-`--convs` 怎么定、积压丢弃兜底这些细节见
+实测：长跑 4 分钟 **7298 帧、0 次断流、稳定 30fps**；去 demo 固件上 60 秒长跑
+`[17] 大核提交帧号` 稳定 **+30.5/秒**（= 源帧率）、0 停顿、0 退出。
+
+> **怎么确认画面真的在动**：看探针 `[17] 大核提交帧号`在涨（≈ +30/秒）。
+> `[16]==1`、`[11]≈2.61M`、`[18]` 这三项**都会骗人** —— cmdqu 被 `mon` 打满时
+> 大核一帧都交不进去，小核却仍以 33fps 反复推同一张旧图，于是这三项照常好看，
+> 只有屏上是定格的。这个坑见指南 8.7。
+
+RTSP 服务端的四个 quirk、`--convs` 怎么定、积压丢弃兜底这些细节见
 `sdcard/rootfs/root/指南/2026.10.3-摄像头-RTSP画面实时上屏.txt`。
 
 ---
