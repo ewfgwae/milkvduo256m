@@ -64,6 +64,8 @@ image/CHECKSUMS.txt                   校验值（已验证与板子逐文件一
 固件与新版 `lcd_sender`；② 清掉 `/root` 下的一批垃圾文件（文件名内嵌控制字符的
 监控残留 + 两个旧固件实验文件）；③ 把 `/root/指南/` 换成最新 `readme.txt` 并补上
 `2026.9.28.txt`。完整校验值见 `image/CHECKSUMS.txt`。
+> 注：指南从 2026-09-30 起改用「日期-类别-问题简述」命名（见第 4 节），
+> 上面这份镜像里的文件名仍是改名前的旧名。
 
 ### 2.1 合并 + 解压（WSL / Linux）
 
@@ -153,10 +155,28 @@ duo256m-lcd-rtos/
 │   ├── big_core/              大核程序源码 lcd_sender.c + lcd_shm.h
 │   └── examples/              大核用户态例子 st7789/ 与 lvgl_port/（wiringX + spidev）
 └── tools/                     一键脚本（见第 5 节）
+    ├── rtsp2lcd.c             ★ 摄像头画面实时上屏：RTSP 收流 + 硬件 H.264 解码 + 送共享内存
+    ├── build_rtsp2lcd.sh      编 rtsp2lcd（带空格的路径先镜像到无空格目录再编）
+    ├── lcdcam.sh              板上常驻脚本：断线自动重连（部署为 /root/lcdcam.sh）
+    ├── probe.sh               读小核探针并打印
+    ├── longrun.sh             长跑 + 定时采样探针
+    ├── deploy_big.sh          取回产物 → 停旧进程 → 覆盖 → 校验 md5
+    ├── rtsp_count.py          纯计数 RTSP 客户端（判断"服务端不发"还是"客户端不收"）
+    └── capture_stream.py      抓包 / RTSP 握手诊断
 ```
 
 板上完整开发记录随卡一起走，在 `sdcard/rootfs/root/指南/`：`readme.txt` 说明这些指南
-怎么写，`YYYY.M.D.txt` 是当日记录（环境约定 + 变更记录），上板后位于 `/root/指南/`。
+怎么写，`YYYY.M.D-类别-问题简述.txt` 是当日记录（环境约定 + 变更记录），上板后位于
+`/root/指南/`。文件名自带"这天解决的是哪个方向的问题"，不必打开文件就能定位：
+
+| 文件 | 方向 |
+|---|---|
+| `2026.9.28-小核-帧率修复与热更.txt` | 小核：帧率掉到 1~2 FPS 的修复、热更流程、IPCM 邮箱排障 |
+| `2026.9.30-摄像头-无法出图.txt` | 摄像头：两个根因（ko 与重编内核 ABI 不匹配、复位脚未拉高）、自检脚本 |
+| `2026.9.30-摄像头-画面显示到屏.txt` | 显示：把摄像头画面取中间送上屏的方案与当时的 ABI 卡点 |
+| `2026.10.3-摄像头-RTSP画面实时上屏.txt` | 摄像头：RTSP + 硬件 H.264 解码实时上屏（含**运行视觉程序的完整指令**）；同日去掉小核自带的跑分 demo |
+
+命名规范与类别表见 `指南/readme.txt` 第 1 节。
 
 ---
 
@@ -265,10 +285,12 @@ cd duo-examples && source envsetup.sh          # 选 2 = Duo256M，选 riscv/arm
 
 整套功能 = 3 个文件：`/boot/fip.bin`、`/boot/boot.sd`、`/mnt/data/{auto.sh,cvirtos.bin,lcd_sender}`。
 
-想让屏上的 LVGL 跑分重新跑一遍：随便热更一次小核固件即可（小核重启就重建界面）：
+**上电后屏上是什么**：一块**纯黑屏 + 右下角 OSD 小字**（帧率 / A53 占用率 / C906 占用率）。
+小核固件从 build `0x484A000B` 起**不再自带 `lv_demo_benchmark`**，所以屏上任何画面都必须
+由大核点播（`lcd_sender fill/bars/anim`，或第六章那套摄像头链路）。想确认小核在跑：
 
 ```bash
-ssh root@192.168.42.1 '/root/lcd_sender rtos /root/cvirtos.bin'
+ssh root@192.168.42.1 '/root/lcd_sender ping'
 ```
 
 ### 6.2 `lcd_sender` 子命令
@@ -294,7 +316,9 @@ ssh root@192.168.42.1 '/root/lcd_sender rtos /root/cvirtos.bin'
     ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.elf | grep -E 'g_lvgl_probe|g_dma2_probe|g_spi2_probe'
 ```
 
-对应 **build id `0x484A0008`** 的固件：
+探针数组是 `g_lvgl_probe[20]`，**小核是 RV64，`unsigned long` 是 8 字节，devmem 的步长必须按 8**。
+
+以 **build id `0x484A0008`** 的固件为例（地址随固件体积变化，这里只示范格式）：
 
 | 地址 | 含义 |
 |---|---|
@@ -307,11 +331,22 @@ ssh root@192.168.42.1 '/root/lcd_sender rtos /root/cvirtos.bin'
 | `0x8fec3a08` | `g_dma2_probe[25]` 单次等待最长耗时 us |
 | `0x8fec3a48` | `g_spi2_probe[5]` DMA 失败回退 PIO 次数，**应为 0** |
 
+已记录在案的版本（`g_lvgl_probe` 基址，build id 在 `基址 + 0x70`）：
+
+| build id | 基址 | 说明 |
+|---|---|---|
+| `0x484A0008` | `0x8fe6ce20` | 帧率修复版 |
+| `0x484A000A` | `0x8fe6cfe0` | 带 `LCD_CMD_CAM` 画面模式（屏上仍有跑分 demo） |
+| `0x484A000B` | 编译后重查 | 去掉 `lv_demo_benchmark`，上电纯黑屏 |
+
 ```bash
 devmem 0x8fe6ce90 32      # build id
 devmem 0x8fe6ce58 32      # fps x10
 devmem 0x8fec3958 32      # tmoN
 ```
+
+板上现成脚本 `/root/probe.sh` 把 `[0]`..`[19]` 一次读全，另有 `[16]` 画面模式标志、
+`[18]` 小核已画帧数、`[19]` 的 `'CAMR'` 魔数尾可用来判断摄像头画面链路是否活着。
 
 ### 6.4 已知故障与坑
 
@@ -341,6 +376,48 @@ devmem 0x8fec3958 32      # tmoN
 
 ---
 
+### 6.5 摄像头画面实时上屏（RTSP + 硬件 H.264 解码）
+
+屏按 320x240 横屏，摄像头出的是 1280x720，中间要解码 + 缩放。这条路走的是
+「RTSP 收流 → `CVI_VDEC` 硬件解码 → 缩放 + YUV→RGB565(大端) → 共享内存 → `LCD_CMD_CAM`」。
+
+**两步跑起来**（板上执行；板子没有编译器，`rtsp2lcd` 要先在 WSL 里编好再传上去）：
+
+```bash
+# 1) 起取流服务（摄像头 → H.264 1280x720，RTSP 服务端监听 554）
+/mnt/system/usr/bin/ai/sample_vi_fd /mnt/cvimodel/scrfd_768_432_int8_1x.cvimodel \
+    >/tmp/sample_vi_fd.log 2>&1 &
+
+# 2) 把画面推到屏上（前台跑，Ctrl-C 停）
+cd /root
+LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd \
+    /root/rtsp2lcd rtsp://127.0.1.1/h264
+```
+
+嫌麻烦就用常驻脚本（缺取流服务会自己拉起，`rtsp2lcd` 退了 2 秒后自动重连）：
+
+```bash
+nohup sh /root/lcdcam.sh >/dev/null 2>&1 &   # 后台常驻
+tail -f /tmp/lcdcam.log                      # 看状态
+killall lcdcam.sh rtsp2lcd                   # 停
+```
+
+编 `rtsp2lcd`（在 WSL 里；脚本会先把带空格的仓库镜像到无空格的 `~/wbrepo` 再编）：
+
+```bash
+bash ~/wb_build_big.sh        # 产物 ~/wbbuild/rtsp2lcd
+```
+
+三个必须记住的点：加 `-D__CV181X__`（否则 CVITEK 头报 `Unknown Chip Architecture!`）、
+头用 `duo-tdl-examples/include/system`、库用板上原版的 `~/boardlibs`，
+链接 `-lvdec -lsys -lpthread -lrt -lm`。
+
+实测：长跑 4 分钟 **7298 帧、0 次断流、稳定 30fps**。RTSP 服务端的四个 quirk、
+`--convs` 怎么定、积压丢弃兜底这些细节见
+`sdcard/rootfs/root/指南/2026.10.3-摄像头-RTSP画面实时上屏.txt`。
+
+---
+
 ## 7. 本版本的关键改动（相对原厂 SDK）
 
 `src/sdk_overlay/` 里就是全部，逐条：
@@ -354,7 +431,7 @@ devmem 0x8fec3958 32      # tmoN
 | `freertos/cvitek/task/comm/src/riscv64/hotjump.S` | **新增**：常驻热更跳板（固定在 `0x8FF90000`） |
 | `freertos/cvitek/task/comm/src/riscv64/sysdma_test.c` | **新增**：启动时 sysDMA 自检 |
 | `freertos/cvitek/task/comm/src/riscv64/comm_main.c` | 挂上 `cmdqu` 命令分发（`LCD_CMD_*`） |
-| `freertos/cvitek/task/lvgl/*` | **新增**：LVGL 移植 + 半屏双缓冲 + OSD 任务 |
+| `freertos/cvitek/task/lvgl/*` | **新增**：LVGL 移植 + 半屏双缓冲 + OSD 任务；2026-10-03 起不再跑 `lv_demo_benchmark`（上电纯黑屏 + OSD，画面只由 `LCD_CMD_CAM` 点播） |
 | `freertos/cvitek/task/CMakeLists.txt` | 加入 `lvgl` 子目录 |
 | `freertos/cvitek/task/main/CMakeLists.txt` | 入口调整 |
 | `freertos/cvitek/scripts/cv181x_lscript.ld` | 新增 `.hotjump` 与 `.lvgl_fb`(NOLOAD) 段，应用区让出 `0x70000` |
@@ -363,6 +440,13 @@ devmem 0x8fec3958 32      # tmoN
 | `build/boards/cv181x/…/…_arm64_sd.dts` | 给 `&spi2` 加 DMA 请求线 + `sysdma_remap` 槽位 4/5 改给 SPI2 |
 | `build/boards/cv181x/…/linux/…_defconfig` | 内核配置相应打开 |
 | `linux_5.10/drivers/spi/spidev.c` | `bufsiz` 4096 → 262144（大核用户态刷屏才够用） |
+
+大核侧不在 `src/sdk_overlay/` 里，单独列一下：
+
+| 文件 | 说明 |
+|---|---|
+| `tools/rtsp2lcd.c` | **新增**（2026-10-03）：RTSP 客户端 + `CVI_VDEC` 硬件解码 + 缩放到 320x240 + YUV→RGB565(大端) + 写共享内存 + 发 `LCD_CMD_CAM` |
+| `src/big_core/lcd_shm.h` | 新增 `LCD_CMD_CAM`(0x48)；屏尺寸定为 320x240 横屏 |
 
 内存布局（热更为什么安全）：
 
@@ -377,8 +461,9 @@ devmem 0x8fec3958 32      # tmoN
 
 ## 8. 参考
 
-- 板上完整开发指令、内存布局、fip 重烧流程与排障记录：`sdcard/rootfs/root/指南/YYYY.M.D.txt`
-  （板子上的路径是 `/root/指南/`，其中 `readme.txt` 说明这些指南怎么写）
+- 板上完整开发指令、内存布局、fip 重烧流程与排障记录：
+  `sdcard/rootfs/root/指南/YYYY.M.D-类别-问题简述.txt`
+  （板子上的路径是 `/root/指南/`，其中 `readme.txt` 说明这些指南怎么写、类别怎么选）
 - Milk-V Duo256M 文档：<https://milkv.io/docs/duo/getting-started/duo256m>
 - duo-examples：<https://github.com/milkv-duo/duo-examples>
 

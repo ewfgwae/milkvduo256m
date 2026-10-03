@@ -32,8 +32,11 @@
 #define LCD_SHM_MAGIC       0x4C434431UL   /* 'LCD1' */
 #define LCD_SHM_VERSION     1u
 
-#define LCD_W               240
-#define LCD_H               320
+/* 屏按 320x240 横屏显示(见 lcd_st7789.c 的 MADCTL): 与摄像头 320x240 一比一铺满,
+ * 不裁不转。注意 320*240*2 == 240*320*2, 所以 LCD_FB_BYTES 仍是 153600, 共享内存
+ * 布局一个字节都不用动。 */
+#define LCD_W               320
+#define LCD_H               240
 #define LCD_FB_BYTES        (LCD_W * LCD_H * 2)      /* 153600 */
 
 #define LCD_SHM_CTRL_OFF    0      /* 64B: 大核写, 小核只读 */
@@ -65,6 +68,11 @@
                                     * 覆盖 0x8FE00000..0x8FF90000 的应用区, 跳板
                                     * 再做 cache 失效并跳回 _start。见 hotjump.S。
                                     * 小核不回执(它随即停机)。 */
+#define LCD_CMD_CAM         0x48   /* 大核 -> 小核: 摄像头画面。大核已把一张
+                                    * RGB565(大端) 图写进 fb 区, 矩形在 ctrl 的
+                                    * x0/y0/x1/y1。小核用 LVGL 把它显示出来。
+                                    * 这是"画面模式": 进入后小核停掉跑分 demo,
+                                    * 没画面时显示黑底(不再刷红/绿/蓝心跳)。 */
 
 /* ---- 小核固件热更握手 (实现见 task/comm/src/riscv64/hotjump.S) --------
  *   ctrl.reload     @ LCD_RELOAD_REQ_ADDR : 大核 -> 小核。
@@ -115,8 +123,7 @@ struct lcd_shm_stat {
 	volatile uint32_t state;      /* 40->0: LCD_STATE_* */
 	volatile uint32_t ack_seq;    /*  4: 小核已完成的 seq */
 	volatile uint32_t frame_cnt;  /*  8: 小核累计刷屏次数 */
-	volatile uint32_t last_ticks; /* 12: 上一帧耗时（FreeRTOS tick，见
-	                               *     configTICK_RATE_HZ：现为 1000Hz => 1ms/tick） */
+	volatile uint32_t last_ticks; /* 12: 上一帧耗时（FreeRTOS tick，5ms/tick） */
 	volatile uint32_t last_bytes; /* 16: 上一帧推给 SPI 的字节数 */
 	volatile uint32_t err;        /* 20: 出错计数 */
 	volatile uint32_t reload_ack; /* 24: 热更握手, 1=小核已停在跳板 */

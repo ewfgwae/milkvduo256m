@@ -7,8 +7,8 @@
 #include "semphr.h"
 #include "lcd_shm.h"
 
-#define LCD_W   240
-#define LCD_H   320
+/* 屏尺寸(LCD_W/LCD_H)统一由 lcd_shm.h 给(320x240 横屏), 这里不再重复定义 ——
+ * 两边各写一份最容易"改了一处漏一处"。本文件下面已经 include 了 lcd_shm.h。 */
 
 /* ST7789 常用色 (RGB565) */
 #define LCD_RED     0xF800
@@ -32,7 +32,8 @@ void lcd_blit_wait(void);
 void lcd_blit_start(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, const uint8_t *rgb565_be);
 void lcd_backlight(int on);
 
-/* 建一个小核侧的刷屏任务: 跑 ST7789 初始化, 然后循环刷红/绿/蓝 */
+/* 建一个小核侧的刷屏任务: 跑 ST7789 初始化, 之后只等大核的 FLUSH/FILL 命令。
+ * (默认**不**被 comm_main.c 启动 —— 现在屏幕归 LVGL 独占, 见 lvgl_task.c) */
 void lcd_task_start(void);
 
 /* ---- 共享内存接收端 (大核通过 cmdqu 下命令, 像素走共享内存) ---------- */

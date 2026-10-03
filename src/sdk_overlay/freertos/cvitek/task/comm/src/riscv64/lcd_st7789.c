@@ -29,6 +29,20 @@
 #define LCD_DC_CMD()    gpio_direction_output(LCD_PIN_DC, 0)
 #define LCD_DC_DATA()   gpio_direction_output(LCD_PIN_DC, 1)
 
+/* ---------- 屏方向: 320x240 横屏 ----------
+ * ST7789 的显存天生是 240(列) x 320(行) 竖屏。要当 320x240 横屏用, 必须
+ * 在 MADCTL(0x36) 里打开 MV 位 —— MV=1 时行列互换, 于是"列"变成 320、"行"
+ * 变成 240, 与 lcd_shm.h 的 LCD_W=320/LCD_H=240 对齐。
+ * 实测(本屏, 2026-10-03 板上验证):
+ *   0x60 = MX|MV  -> 横屏, 上下方向正常
+ *   0xA0 = MY|MV  -> 横屏, 画面上下颠倒
+ *   若 0x60 装出来左右镜像, 改 0x20(MV 单开) 即可。
+ * 开窗偏移: 本屏可见区从 (0,0) 开始, 所以偏移都是 0; 若换到带边框的屏
+ * (常见 240x320 面板 X 偏 0 / Y 偏 80), 改这两个宏就行, 不用动别处。 */
+#define LCD_MADCTL      0x60
+#define LCD_X_OFF       0
+#define LCD_Y_OFF       0
+
 /* 大核用 devmem 读这 16 个 unsigned long, 就能知道小核跑到哪一步了 */
 #define LCD_PROBE_MAGIC_HEAD    0x5A5A1234UL
 #define LCD_PROBE_MAGIC_TAIL    0xA5A5C3C3UL
@@ -68,6 +82,10 @@ void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 	 * 同一个 FIFO 的, 不等它搬完就发会把窗口命令插进像素流里, 画面直接错位。
 	 * 空闲时这个调用是空操作。 */
 	lcd_blit_wait();
+
+	/* 横屏下"逻辑坐标"与"面板物理坐标"差一个偏移(见 LCD_X_OFF/LCD_Y_OFF) */
+	x0 += LCD_X_OFF; x1 += LCD_X_OFF;
+	y0 += LCD_Y_OFF; y1 += LCD_Y_OFF;
 
 	lcd_cmd(0x2A);                  /* Column address set */
 	a[0] = x0 >> 8; a[1] = x0 & 0xFF;
@@ -151,7 +169,7 @@ void lcd_init(void)
 	/* ---- 下面这张表与 Linux 侧 st7789.c 的 TFT_init() 逐条对应 ---- */
 	lcd_cmd_data(0x3A, (const uint8_t[]){0x05}, 1);                 /* 65k mode */
 	lcd_cmd_data(0xC5, (const uint8_t[]){0x1A}, 1);                 /* VCOM */
-	lcd_cmd_data(0x36, (const uint8_t[]){0x00}, 1);                 /* 方向, bit3=0: RGB */
+	lcd_cmd_data(0x36, (const uint8_t[]){LCD_MADCTL}, 1);           /* 方向: 320x240 横屏(见 LCD_MADCTL) */
 	lcd_cmd_data(0xB2, (const uint8_t[]){0x05,0x05,0x00,0x33,0x33}, 5);  /* Porch setting */
 	lcd_cmd_data(0xB7, (const uint8_t[]){0x05}, 1);                 /* Gate control */
 	lcd_cmd_data(0xBB, (const uint8_t[]){0x3F}, 1);                 /* VCOM */
@@ -288,10 +306,8 @@ void lcd_shm_fill(void)
 
 static void prvLcdTask(void *pvParameters)
 {
-	static const uint16_t colors[3] = { LCD_RED, LCD_GREEN, LCD_BLUE };
 	volatile unsigned long *p = (volatile unsigned long *)g_lcd_probe;
 	TickType_t t0;
-	int demo = 1;                       /* 大核还没接管时跑颜色心跳 */
 	uint32_t n = 0;
 
 	(void)pvParameters;
@@ -314,15 +330,13 @@ static void prvLcdTask(void *pvParameters)
 
 		t0 = xTaskGetTickCount();
 
+		/* 只处理大核下发的 FLUSH/FILL。没有大核接管时**什么也不画**:
+		 * 屏上保持黑底, 不再刷红/绿/蓝心跳(画面模式由 LVGL 那边负责)。 */
 		if (xSemaphoreTake(g_lcd_flush_sem, pdMS_TO_TICKS(2000)) == pdTRUE) {
-			demo = 0;                   /* 大核接管屏幕, 心跳停掉 */
 			if (g_lcd_pending_fill)
 				lcd_shm_fill();
 			else
 				lcd_shm_flush();
-			did = 1;
-		} else if (demo) {
-			lcd_fill(colors[n % 3]);
 			n++;
 			did = 1;
 		}

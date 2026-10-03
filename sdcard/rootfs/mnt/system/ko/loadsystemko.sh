@@ -7,6 +7,7 @@ insmod /mnt/system/ko/cv181x_sys.ko
 insmod /mnt/system/ko/cv181x_base.ko
 insmod /mnt/system/ko/cv181x_rtos_cmdqu.ko
 insmod /mnt/system/ko/cv181x_fast_image.ko
+#insmod /mnt/system/ko/snsr_rst.ko  # 备用: ABI 修复后不再需要(2026-09-30)
 insmod /mnt/system/ko/cvi_mipi_rx.ko
 insmod /mnt/system/ko/snsr_i2c.ko
 insmod /mnt/system/ko/cv181x_vi.ko

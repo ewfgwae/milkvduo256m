@@ -8,10 +8,9 @@
  *                                       内容改成 FPS + 大核/小核占用率)
  *   LV_FONT_MONTSERRAT_* 只留 12/14/16/18/20/24 (lv_demo_widgets 用到的字号)
  *   LV_USE_THEME_MONO    1 -> 0
- *   LV_USE_DEMO_WIDGETS  0 -> 1        (与大核 Linux 侧跑同一个 demo)
- *   LV_USE_DEMO_BENCHMARK 0 -> 1       (选它时屏上跑的动态 demo; 两者都开, 具体跑哪个
- *                                       由 lvgl_task.c 决定 —— 没被引用的那份会被
- *                                       --gc-sections 丢掉, 不占固件体积)
+ *   LV_USE_DEMO_WIDGETS  0 -> 0        (★ 2026-10-03: 小核不再跑任何 demo)
+ *   LV_USE_DEMO_BENCHMARK 0 -> 0       (★ 2026-10-03: 去掉屏上的跑分 demo,
+ *                                       上电即黑屏, 画面只由大核 LCD_CMD_CAM 触发)
  *   其余 demo 保持 0
  * 颜色/字节序(LV_COLOR_16_SWAP 1) 与 tick(LV_TICK_CUSTOM) 与 Linux 侧保持一致。
  * =================================================================== */
@@ -770,7 +769,7 @@
  ====================*/
 
 /*Show some widget. It might be required to increase `LV_MEM_SIZE` */
-#define LV_USE_DEMO_WIDGETS 1
+#define LV_USE_DEMO_WIDGETS 0
 #if LV_USE_DEMO_WIDGETS
 #define LV_DEMO_WIDGETS_SLIDESHOW 0
 #endif
@@ -779,7 +778,7 @@
 #define LV_USE_DEMO_KEYPAD_AND_ENCODER 0
 
 /*Benchmark your system*/
-#define LV_USE_DEMO_BENCHMARK 1
+#define LV_USE_DEMO_BENCHMARK 0
 #if LV_USE_DEMO_BENCHMARK
 /*Use RGB565A8 images with 16 bit color depth instead of ARGB8565*/
 #define LV_DEMO_BENCHMARK_RGB565A8 0

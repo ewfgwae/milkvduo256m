@@ -1,0 +1,975 @@
+================================================================================
+  Milk-V Duo256M 双核 LCD 监控设备 —— 开发记录
+  日期: 2026-09-30        文件位置: /root/指南/2026.9.30-摄像头-无法出图.txt
+================================================================================
+
+【写法约定见同目录 readme.txt】本文件分两大部分, 一律按要点分条写:
+  第一部分"环境与约定"(第一~七章) —— 接手的人必须先知道的一切, 一条一个知识点;
+  第二部分"变更记录"(第八章)       —— 按时间顺序记流水账, 一条一件事。
+每条记录的时间精确到分钟(UTC+8); 确实取不到准确时间的旧记录只写日期, 不编造。
+
+★ 安全铁律 (三条, 每次动手前先过一遍)
+  1) fip.bin 是唯一的引导固件, 不要随手动它。本板有 SD 读卡器, 最坏情况可以重写整卡
+     救回来, 但要拆机取卡、代价高。
+  2) 改小核固件一律走"热更"(见 2026.9.28-小核-帧率修复与热更.txt 第五章) —— 它不碰 fip.bin、不重启系统。
+  3) 万一必须重打包 fip, 做完必须做字节级校验: 除小核固件段(BLCP_2ND)外, 其余逐字节不变。
+
+【本文件背景】2026-09-30 用 CAM-GC2083 摄像头做测试, camera-test.sh 失败。
+本文件把"摄像头为什么起不来"的分层结论、判据、以及一条自检脚本固定下来。
+
+================================================================================
+  一、环境与约定  (接手的人必须先知道的一切)
+================================================================================
+
+1.1 摄像头硬件
+--------------------------------------------------------------------------------
+  1) 模组: Milk-V CAM-GC2083 (格科微 GC2083, 200 万像素, MIPI CSI)。
+  2) 接口: 板上 16P MIPI CSI 座(FPC 排线)。
+  3) 供电: 由板子提供 3V3; 电平 1.8V 域, 切勿接 5V。
+  4) 排线朝向: 金手指方向插错是最常见的"完全没反应"原因, 插法与屏一样要看清楚再上电。
+
+1.2 摄像头在 Duo256M 上的引脚占用 (决定性事实, 与 LCD 不冲突)
+--------------------------------------------------------------------------------
+  1) 摄像头 I2C 走的是 **I2C2**, 引脚是 MIPI 那几个 pad, 不是 40PIN 排针:
+       PAD_MIPI_TXM1 = IIC2_SDA   (板上丝印 GP10)
+       PAD_MIPI_TXP1 = IIC2_SCL   (板上丝印 GP11)
+       PAD_MIPI_TXP0 = CAM_MCLK0  (传感器主时钟)
+       PAD_MIPI_TXP2 = XGPIOC_17  (传感器 RESET, 低有效, 板上丝印 GP12)
+     出处: build/boards/cv181x/sg2002_milkv_duo256m_glibc_arm64_sd/u-boot/cvi_board_init.c
+  2) LCD 走的 SPI2 用的是 SD1_* 那组 pad (GP6~GP9), I2C1 用 SD1_D2/D1 (GP4/GP5)。
+  3) 结论: 摄像头(I2C2/GP10~GP12 + MIPI 差分对) 与 LCD(SPI2/GP6~GP9 + DC/RES/BLK)
+     用的pad **完全不重叠**。所以"装了 LCD" 不可能把摄像头挤掉, 排障时不要往这边想。
+  4) 寄存器对照表(FMUX, 基址 0x03001000), 板上实测值在括号里:
+       devmem 0x030011AC 32   # PAD_MIPI_TXM1 -> IIC2_SDA, 正常 = 0x4
+       devmem 0x030011B0 32   # PAD_MIPI_TXP1 -> IIC2_SCL, 正常 = 0x4
+       devmem 0x030011B8 32   # PAD_MIPI_TXP0 -> CAM_MCLK0, 正常 = 0x4
+       devmem 0x030011A8 32   # PAD_MIPI_TXP2 -> XGPIOC_17, 正常 = 0x3
+
+1.3 I2C 总线号与控制器物理地址的对应 (务必记住)
+--------------------------------------------------------------------------------
+  1) I2C1_BASE = 0x4010000 -> i2c-1  -> 引脚 GP4/GP5
+  2) I2C2_BASE = 0x4020000 -> i2c-2  -> 摄像头, 引脚 GP10/GP11
+  3) I2C3_BASE = 0x4030000 -> i2c-3
+  4) 出处: freertos/cvitek/hal/cv181x/config/top_reg.h 第 32~36 行。
+  5) 用途: 内核打印里的 "i2c_designware 4010000.i2c: controller timed out" 指的是
+     **i2c-1**, 不是摄像头那条总线。看到这条不要误判成摄像头有问题。
+
+1.4 传感器配置文件
+--------------------------------------------------------------------------------
+  1) 路径: /mnt/data/sensor_cfg.ini, 是个软链接, 指向 sensor_cfg_GC2083.ini。
+  2) 本板当前内容(与官方 SDK 模板逐字节一致):
+       [source]  dev_num = 1
+       [sensor]  name = GCORE_GC2083_MIPI_2M_30FPS_10BIT
+                 bus_id = 2
+                 sns_i2c_addr = 37      (即 7bit 地址 0x37)
+                 mipi_dev = 0
+                 lane_id = 1, 0, 2, -1, -1
+                 pn_swap = 0, 0, 0, 0, 0
+  3) 官方模板位置: $SDK/device/generic/rootfs_overlay/duo256m/mnt/data/sensor_cfg_GC2083.ini
+  4) GC2083 的 I2C 地址是 0x37, 所以"扫总线时找 0x37"就是找摄像头。
+
+1.5 测试程序在哪 (踩过的坑, 极易误判)
+--------------------------------------------------------------------------------
+  1) 测试脚本: /mnt/system/usr/bin/camera-test.sh, 内容只有两行有效:
+       export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd
+       sample_vi_fd /mnt/cvimodel/scrfd_768_432_int8_1x.cvimodel
+  2) 它调的是 PATH 里的 sample_vi_fd, 而 PATH 由 /etc/profile 追加
+     /mnt/system/usr/bin —— 也就是说 **只有登录 shell 才找得到**。
+  3) /root 下那个 sample_vi_fd 只有 23048 字节, 与 /mnt/system/usr/bin/ai/sample_vi_fd
+     (155960 字节) **不是同一个东西**。/root 那个实测连中间件都不进, 只报
+     "Failed to get senor infomation from ini file"; 真正能测摄像头的只有
+     /mnt/system/usr/bin/ai/sample_vi_fd。
+  4) 所以在 /root 下直接敲 camera-test.sh, 实际跑的是 /root/sample_vi_fd —— 靠"当前
+     目录也在 PATH 里"才跑起来的, 换目录就报 not found。要复现必须写绝对路径:
+       /mnt/system/usr/bin/ai/sample_vi_fd /mnt/cvimodel/scrfd_768_432_int8_1x.cvimodel
+
+1.6 摄像头相关的内核模块 (原厂 loadsystemko.sh 已在加载)
+--------------------------------------------------------------------------------
+  1) /mnt/system/ko/ 下与摄像头有关的是:
+       cvi_mipi_rx.ko    MIPI CSI 接收(含 snsr-reset 引脚控制)
+       snsr_i2c.ko       传感器 I2C
+       cv181x_vi.ko      VI
+       cv181x_base.ko / cv181x_sys.ko / cv181x_vpss.ko / cv181x_dwa.ko
+  2) 传感器驱动本体在用户态库里, 不在 ko 里:
+       /mnt/system/usr/lib/libsns_full.so
+       源码路径(编译时): cvi_mpi/component/isp/sensor/cv181x/gcore_gc2083/gc2083_cmos.c
+   3) 打印 "family ID request : receive error" 的字符串在 /mnt/system/usr/lib/libsys.so,
+      含义 = 驱动读传感器 ID 失败, 也就是 I2C 上没有应答。
+  4) /dev/cvi-vo 不存在 —— 因为 loadsystemko.sh 里 cv181x_vo.ko 是注释掉的。
+     这一条只是提示("Cannot open '/dev/cvi-vo': 2"), 与本测试能否出图 **无关**,
+     不要把它当成失败原因。
+
+================================================================================
+  二、2026-09-30 的排障结论 (先说结论, 判据在下一章)
+================================================================================
+
+  1) 现象: 板上跑 camera-test.sh, 最后停在
+       [SAMPLE_COMM_VI_StartMIPI]-494: sensor 0 stDevAttr.devno 0
+       vi init failed. s32Ret: 0xffffffff !
+       init middleware failed! ret=ffffffff
+     并且前面有一行 family ID request : receive error。
+  2) 结论: **SoC 侧的软件与引脚配置全部正确; 失败点在"摄像头本体没有应答"**,
+     属于硬件/接线/供电层面的问题 —— 具体就是: 那条 I2C2 总线上一个器件都没有,
+     i2cdetect 全 " -- "。
+  3) 也就是说: 这不是固件不对、也不是"LCD 抢了引脚"、更不是 camera-test.sh 坏了,
+     而是 **模组、排线、座子这三者之间没通**。
+  4) 因此正确的第一步不是改配置, 而是: 断电 -> 重新插好 FPC 排线(金手指朝向要对) ->
+     上电 -> 跑 1.5 节第 4) 条那条绝对路径命令。
+
+================================================================================
+  三、判据: 每一步做了什么、看到什么 (可复现)
+================================================================================
+
+3.1 判据一: 传感器配置正确
+--------------------------------------------------------------------------------
+  1) 命令:
+       ls -l /mnt/data/sensor_cfg.ini
+       cat /mnt/data/sensor_cfg.ini
+  2) 结果: 软链接 -> sensor_cfg_GC2083.ini; 内容与 1.4 节第 2) 条完全一致;
+     与官方模板 device/generic/rootfs_overlay/duo256m/mnt/data/sensor_cfg_GC2083.ini
+     逐字节相同。 => 配置层排除。
+
+3.2 判据二: 摄像头 I2C 引脚复用正确
+--------------------------------------------------------------------------------
+  1) 命令:
+       devmem 0x030011AC 32
+       devmem 0x030011B0 32
+       devmem 0x030011B8 32
+       devmem 0x030011A8 32
+  2) 结果: 0x00000004 / 0x00000004 / 0x00000004 / 0x00000003。
+  3) 对照 1.2 节第 4) 条的期望值 —— 四项全中。 => SoC 引脚没切错, 排除。
+  4) 同时读 LCD 那边(SD1 组)确认没有被改坏:
+       devmem 0x030010E4 32   # SD1_CLK -> SPI2_SCK, = 0x1
+       devmem 0x030010E0 32   # SD1_CMD -> SPI2_SDO, = 0x1
+       devmem 0x030010D0 32   # SD1_D3  -> SPI2_CS_X,= 0x1
+     实测都是 0x1, 屏照常工作。
+
+3.3 判据三: 摄像头总线上一片空白 (决定性证据)
+--------------------------------------------------------------------------------
+  1) 命令:
+       i2cdetect -l
+       i2cdetect -y -r 1
+       i2cdetect -y -r 2
+       i2cdetect -y -r 3
+  2) 结果: i2c-1 / i2c-2 / i2c-3 三条总线都是满屏 " -- ", 没有任何地址应答;
+     期望出现 0x37(GC2083) 的位置也是 " -- "。
+     连"边跑测试边扫"都扫不到(测试程序正在反复读传感器时同样没有 0x37)。
+  3) 注意: 扫的时候没有报 "controller timed out", 说明控制器本身是好的、
+     时钟在走, 只是没有任何器件拉低 SDA 应答。 => 问题在总线之外(模组/排线/座子)。
+
+3.4 判据四: 完整复现失败, 且确认只有真测试程序能测
+--------------------------------------------------------------------------------
+  1) 命令:
+       export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd
+       cd /root
+       timeout 30 sh -lc 'camera-test.sh'
+  2) 结果(与最初现象逐行一致):
+       Cannot open '/dev/cvi-vo': 2, No such file or directory
+       family ID request : receive error
+       [SAMPLE_COMM_SNS_ParseIni]-2219: Parse /mnt/data/sensor_cfg.ini
+       ... (解析结果与 1.4 节一致) ...
+       MMF Version:6b03c2762-64bit
+       Create VBPool[0..2] / Total memory of VB pool: 30758400 bytes
+       Initialize SYS and VB
+       Initialize VI
+       ISP Vipipe(0) Allocate pa(...) va(...) size(311592)
+       stSnsrMode.u16Width 1920 stSnsrMode.u16Height 1080 30.000000 wdrMode 0
+       [SAMPLE_COMM_VI_StartMIPI]-494: sensor 0 stDevAttr.devno 0
+       vi init failed. s32Ret: 0xffffffff !
+       init middleware failed! ret=ffffffff
+  3) 对照实验: 同一目录下跑 /root/sample_vi_fd 只输出到
+       Failed to get senor infomation from ini file (/mnt/data/sensor_cfg.ini).
+     就到头了(退出码 255), 根本进不到 MMF。证明 1.5 节第 3) 条的判断 ——
+     /root 那个不是真测试程序。
+
+3.5 判据五: 复位脚没有被软件拉高 (次要疑点, 记下来备用)
+--------------------------------------------------------------------------------
+  1) 命令(注意 GPIOC 的寄存器偏移, 不是 0x...000/0x...004):
+       devmem 0x03022018 32   # SWPORTC_DR  实测 0x00000000
+       devmem 0x0302201C 32   # SWPORTC_DDR 实测 0x00000000
+  2) 含义: GPIOC 整口既没配成输出、也没输出高电平; bit17 就是传感器 RESET。
+     按 mipi_rx 设备树 snsr-reset = <&portc 17 GPIO_ACTIVE_LOW> 的语义, 正常工作时
+     应为输出高(复位释放)。
+  3) 说明: 手动经 devmem 把 bit17 写 1、再补一次"低->高"脉冲, 总线依然全 "--"。
+     所以"复位没释放"最多是次要因素, **不是**本次的主因; 但排线插好之后如果还是
+     扫不到, 这里是第二个要查的点(见 5.1 第 6) 条)。
+  4) 注意: 本节两条只读命令无副作用; 3) 里写的 devmem 是写入操作, 属于实验性质,
+     不要在生产状态下随手跑。真正的复位控制应该由 cvi_mipi_rx.ko 负责。
+
+================================================================================
+  四、板上一条命令自检 (camera-diag.sh)
+================================================================================
+
+4.1 脚本位置与用法
+--------------------------------------------------------------------------------
+  1) 板上: /root/camera-diag.sh        仓库: sdcard/rootfs/root/camera-diag.sh
+  2) 用法(板上 root):
+       chmod +x /root/camera-diag.sh
+       /root/camera-diag.sh
+  3) 退出码: 0 = 各层自检都过; 非 0 = 至少一层没过(脚本会自己打印结论)。
+     板上拿退出码用 `echo $?`, 别靠肉眼判断。
+
+4.2 脚本查什么、怎么下结论
+--------------------------------------------------------------------------------
+  1) 第 1 步: 打印 sensor_cfg.ini 的关键字段(传感器名/bus_id/地址/lane)。
+  2) 第 2 步: 读 1.2 节那 4 个 FMUX 寄存器, 期望 4/4/4/3; 不对就报"SoC 侧引脚没切到 I2C2"。
+  3) 第 3 步: 依次扫 i2c-1/2/3, 专门找 0x37。
+       a) 找到  -> 打印"接线/供电正常, 问题在软件侧", 可以去跑 camera-test.sh;
+       b) 找不到-> 打印"SoC 侧已就绪, 但摄像头没有任何应答: 属于硬件/接线/供电 问题",
+                  并列出要查的四项(见 5.1)。
+  4) 第 4 步: 把内核日志里 family ID / i2c / sensor / mipi 相关行 tail 出来,
+     并注明 "family ID request : receive error" 的含义与第 3 步结论一致。
+
+4.3 为什么值得留这个脚本
+--------------------------------------------------------------------------------
+  1) 它把"硬件问题"和"软件问题"在一条命令里分开, 省掉反复改配置的瞎试。
+  2) 判据是寄存器原始值和扫描结果, 不依赖任何人的主观描述, 换个人跑结论一样。
+
+================================================================================
+  五、摄像头起不来时的排查顺序 (按代价从低到高)
+================================================================================
+
+5.1 先查硬件 (本次结论指向这里)
+--------------------------------------------------------------------------------
+  1) 断电 -> 把 FPC 排线拔下重插, 确认插到底、卡扣锁紧。
+  2) 确认金手指(金属面)朝向与 milkv.io 文档图示一致 —— 朝向反了会完全没反应。
+  3) 确认插的是板上 **16P MIPI CSI** 座, 不是别的排针座。
+  4) 万用表量座子第 16 脚对地: 应为 3V3。没电就不是软件问题。
+  5) 换一根排线 / 换一个 GC2083 模组交叉验证, 排除排线或模组损坏。
+  6) 以上都对且仍扫不到 0x37, 再查 3.5 节的复位脚: 正常应被 cvi_mipi_rx.ko 拉成
+     输出高; 若实测长期是 0/高阻, 才需要往这一层深挖。
+
+5.2 再查软件 (只有在 5.1 通过、总线上能看到 0x37 之后才轮到这里)
+--------------------------------------------------------------------------------
+  1) 用绝对路径跑真测试程序(1.5 节第 4) 条), 不要用 /root 下那个 23048 字节的:
+       /mnt/system/usr/bin/ai/sample_vi_fd /mnt/cvimodel/scrfd_768_432_int8_1x.cvimodel
+  2) 确认 /dev/i2c-2 存在: ls -l /dev/i2c*
+  3) 确认模块都在: lsmod | grep -E 'vi|mipi|snsr|base|vpss'
+  4) 确认 sensor_cfg.ini 没被人换成别的模组配置(四个 ini 都在 /mnt/data):
+       ls -l /mnt/data/sensor_cfg*.ini
+  5) 注意 "Cannot open '/dev/cvi-vo': 2" 是正常的(cv181x_vo.ko 未加载, 见 1.6 节第 4) 条),
+     不要为它去改任何东西。
+
+5.3 不要做的事
+--------------------------------------------------------------------------------
+  1) 不要为了摄像头去动 fip.bin —— 本次现象与 fip 无关。
+  2) 不要以为是 LCD 抢了引脚 —— 1.2 节第 3) 条已证明两组 pad 不重叠。
+  3) 不要在没确认总线上有 0x37 之前, 反复改 sensor_cfg.ini 的 lane_id / pn_swap。
+
+================================================================================
+  六、【根因①】内核模块 snsr_i2c.ko 在开机 insmod 时就崩了 (Kernel Oops)
+================================================================================
+
+6.1 现象 (dmesg, 每次开机必现)
+--------------------------------------------------------------------------------
+  1) 关键几行(实测原文):
+       [    5.689691] Unable to handle kernel paging request at virtual address 007265746e692f7e
+       [    5.734984] Internal error: Oops: 96000004 [#1] PREEMPT SMP
+       [    5.753351] CPU: 0 PID: 172 Comm: insmod Tainted: GF  O  5.10.4-tag- #3
+       [    5.772059] pc : is_software_node+0x10/0x34
+       [    5.776382] lr : software_node_notify+0x40/0xf4
+       [    5.881467] Call trace:
+       [    5.877861]  device_add+0x174/0x6a0
+       [    5.881467]  platform_device_add+0xec/0x228
+       [    5.885790]  platform_device_register+0x54/0x64
+       [    5.890475]  init_module+0x28/0x1000 [snsr_i2c]
+  2) 那个"虚拟地址" 0x007265746e692f7e 是 ASCII, 解出来是 "~/init..." 这种字符串,
+     也就是内核把一个 **字符串指针** 当成了 struct device 的 fwnode 字段去解引用。
+  3) 完整日志已存在板上: /root/dmesg_boot.txt (520 行)。
+  4) 后果: cvi_snsr_i2c_init() 在第一步 platform_device_register() 就挂了,
+     模块自己的三条自打印(Failed to init res for snsr / Failed to register cmm for snsr /
+     Can not get cvi_snsr drvdata) **一条都没出现**;
+     /sys/bus/platform/devices/ 下也没有 sensor_i2c 平台设备 —— 平台设备确实没建起来。
+
+6.2 这条为什么会让摄像头彻底用不了
+--------------------------------------------------------------------------------
+  1) 整个 CVITEK 传感器 I2C 通路就是 snsr_i2c.ko 提供的:
+       cvi_snsr_i2c_probe() -> vip_sys_register_cmm_cb(0, dev, snsr_i2c_ioctl)
+       _init_resource()     -> i2c_get_adapter(i) + i2c_new_client_device(...)
+     前者把 snsr_i2c_ioctl 注册给 VIP/SYS 的 CMM 框架(用户态 ISP 库就是调它),
+     后者才建出 "sensor_i2c" 这个 I2C 客户端。
+  2) 模块 init 崩了 => 这两个都注册不上 => 用户态库读传感器一律失败,
+     打印就是我们看到的 "family ID request : receive error"。
+  3) ★ 所以先有"模块崩了"这个根因, 才轮到"I2C 上有没有器件"这个问题。
+     查摄像头之前必须先确认这个 Oops 不在。
+
+6.3 根因: 板上的 .ko 是**旧的预编译产物**, 与 2026-09-27 重编的内核不匹配
+--------------------------------------------------------------------------------
+  1) 内核: "Linux version 5.10.4-tag- ... #3 SMP PREEMPT Sun Sep 27 20:42:13 CST 2026",
+     构建树 = /home/chen/duo-sdk-v2/linux_5.10
+     (build/sg2002_milkv_duo256m_glibc_arm64_sd/vmlinux 的时间戳正是 Sep 27 20:42, 对得上)。
+  2) 板上 /mnt/system/ko/*.ko 全部是镜像里带的 **2025-05-30** 预编译产物:
+       -rw-r--r-- 1 root root 14632 May 30  2025 /mnt/system/ko/snsr_i2c.ko
+       -rw-r--r-- 1 root root 90136 May 30  2025 /mnt/system/ko/cvi_mipi_rx.ko
+       -rw-r--r-- 1 root root 463976 May 30  2025 /mnt/system/ko/cv181x_vi.ko
+  3) 内核是本工程改过的(见 README 第 7 节: 设备树加 SPI2 的 DMA 请求线 + sysdma_remap
+     槽位 4/5、defconfig 相应开关、spidev.c 的 bufsiz 4096->262144)。内核一改一重编,
+     和这些旧 .ko 的 ABI 就可能对不上。
+  4) 证据(实测): 把 snsr_i2c.ko 反汇编, 看它对 struct platform_device 的字段偏移:
+       /home/chen/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-objdump \
+           -dr -j .init.text /tmp/ko_check/snsr_i2c.ko
+     输出里:
+       1c: 91014295  add x21, x20, #0x50     <- &cvi_snsr_i2c_pdev (.data + 0x50)
+       ...
+       34: 910a2280  add x0, x20, #0x288     <- &cvi_snsr_i2c_pdrv (.data + 0x288)
+     即该 .ko 认为 struct platform_device 占 0x288-0x50 = 0x238 字节、
+     struct device 的 release 落在 pdev 内偏移 0x40 处(0x8 的 .name + 0x8 的 .id + 0x10 =
+     dev 起始, 0x10+0x30 = 0x40)。这个尺寸与当前内核头文件里的 struct device 明显不符 ——
+     所以 platform_device_register() 走到 device_platform_notify() 时读到的 fwnode 是垃圾。
+  5) 一句话: **改了内核重编, 却没有重编 /mnt/system/ko 下的驱动模块。**
+
+6.4 正确修法: 用同一棵内核树重编 ko
+--------------------------------------------------------------------------------
+  1) 驱动源码(完整可用)整套在:
+       /home/chen/milkv-duo256-develop/     <- CVITEK 原厂源码树, 含 osdrv
+       /home/chen/milkv-duo256-develop/osdrv/interdrv/snsr_i2c/common/snsr_i2c.c
+     注意: 本工程的构建树 /home/chen/duo-sdk-v2 **没有** osdrv 目录, 所以源码要从这棵树拿。
+  2) 该模块的官方构建方式(见 osdrv/interdrv/snsr_i2c/Makefile):
+       make ARCH=$(ARCH) -C $(KERNEL_DIR) M=$PWD modules
+     依赖 base 模块的符号(KBUILD_EXTRA_SYMBOLS = ../base/Module.symvers),
+     osdrv 顶层规则也写明 snsr_i2c: base —— 也就是要**先编 base 再编 snsr_i2c**。
+  3) ★ 关键: KERNEL_DIR 必须指向"正在跑的那个内核"的构建树, 也就是
+       /home/chen/duo-sdk-v2/linux_5.10  (O=build/sg2002_milkv_duo256m_glibc_arm64_sd),
+     工具链用 host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin。
+  4) 编出来的 snsr_i2c.ko 覆盖到板上 /mnt/system/ko/snsr_i2c.ko, 重启(或先
+     rmmod/insmod)后确认:
+       dmesg | grep -i 'Unable to handle'      # 应无输出
+       ls /sys/bus/platform/devices/ | grep sensor   # 应出现 sensor_i2c
+       grep 'i2c:-------hook' /root/dmesg_boot.txt   # 应出现 hook 0/1/2/3
+  5) 同理: 只要以后**再动内核**, /mnt/system/ko 下的模块都要一起重编, 否则这个 Oops
+     会以别的形式再来一次。
+
+6.5 排查顺序上的一句话总结
+--------------------------------------------------------------------------------
+  1) 第一步永远是: dmesg | grep -E 'Unable to handle|Call trace|snsr_i2c' ——
+     确认驱动模块本身没崩。
+  2) 第二步才是: /root/camera-diag.sh —— 确认 I2C 上有没有 0x37。
+  3) 两步都过了, 摄像头还不亮, 才轮到怀疑排线/模组。
+
+================================================================================
+  七、【根因②·真正的那个】传感器复位脚 XGPIOC_17 从来没被拉高
+================================================================================
+
+7.0 ★ 结论先给: 这是"旧预编译 ko + 重编内核"ABI 错位的**第二处**表现
+--------------------------------------------------------------------------------
+  1) 上游源码(V1/V2 都一样, 已逐行确认)**是对的**, 不需要打补丁。
+  2) 真正的修法 = **把 cvi_mipi_rx.ko 也用同一棵内核树重编**, 与根因①同一个道理。
+  3) 重编后的驱动实测能自己搞定复位脚(见 7.5), 所以自写的 snsr_rst.ko 只是
+     临时绕过手段, 现已改为不加载(保留在盘上备用)。
+  4) 关键实测数据(重编驱动 + 打开诊断打印):
+       cif a0c2000.cif: DIAG snsr-reset[0]: pin=433 pol=1   <- 设备树解析完全正确
+       cif a0c2000.cif: DIAG gpio_request(433) = -16        <- -EBUSY, 引脚被占
+     即: **gpio_request 返回 -EBUSY, 而驱动对这一失败是静默 return 0**
+     (cif.c 里 `if (gpio_request(...)) return 0;` 连一行报错都不打)。
+     复位脚于是从未被设成输出, 传感器一直处于复位态, I2C 完全不 ACK。
+
+7.1 现象与决定性证据
+--------------------------------------------------------------------------------
+  1) 修好根因①(Oops)之后, 摄像头**依然**起不来, i2c-2 上仍然扫不到 0x37。
+  2) 于是写了个板上探测工具 tools/camprobe.c(交叉编译成静态 aarch64 二进制),
+     它一次把"引脚复用/复位脚电平/全总线扫描/控制器寄存器"全打出来。
+     板上跑 /root/camprobe, 关键输出:
+       [2] 传感器复位脚状态
+           GPIOC SWPORTC_DR  = 0x00000000   (bit17=0)
+           GPIOC SWPORTC_DDR = 0x00000000   (bit17=0, 1=输出)
+       [4] 对 i2c-2 的 0x37 用多种方式确认
+           quick      -> ret=-1 errno=95(Operation not supported)
+           readbyte   -> ret=-1 errno=121(Remote I/O error)
+           readword   -> ret=-1 errno=121(Remote I/O error)
+  3) 判读:
+       a) DDR bit17 = 0 => 这根脚 **从来没被设成输出**, 一直是输入(悬空);
+       b) errno=121(EREMOTEIO) 是 I2C 从机不 ACK 的标准错误; errno=95 只是
+          DesignWare 控制器不支持 SMBus quick 命令, 属正常;
+       c) 也就是说: 传感器被按在复位态, 根本不可能应答。
+  4) 直接验证(一行命令就见分晓):
+       echo 433 > /sys/class/gpio/export
+       echo out > /sys/class/gpio/gpio433/direction
+       echo 1   > /sys/class/gpio/gpio433/value
+       i2cdetect -y -r 2
+     => 第 0x37 列立刻出现 "37"! 再跑 camera-test.sh 直接出图。
+  5) 全局号换算: XGPIOC_17 属于 gpiochip2(基址 0x3022000.gpio, 全局 416 起),
+     所以 416 + 17 = **433**。
+
+7.2 为什么会这样 (cif 驱动的锅)
+--------------------------------------------------------------------------------
+  1) 复位脚由 CSI 驱动(cvi_mipi_rx.ko, 源码 osdrv/interdrv/cif/chip/cv181x/cif.c)
+     从设备树 "snsr-reset" 取: <&portc 17 GPIO_ACTIVE_LOW>。
+  2) 它的 _init_resource() 里:
+       link->snsr_rst_pin = of_get_named_gpio_flags(..., "snsr-reset", i, &pol);
+       if (link->snsr_rst_pin < 0) break;
+       if (gpio_request(link->snsr_rst_pin, "snsr-rst-gpio")) return 0;   // 静默失败
+       dev_info(&pdev->dev, "rst_pin = %d, pol = %d\n", ...);
+  3) 板上实测: dmesg 里**从来没有** "rst_pin = ..." 这一行 => gpio_request 没成功
+     (或根本没走到), 函数直接 return 0, 于是这根脚从未被设成输出。
+     旁证: /sys/kernel/debug/gpio 里 gpio-433 一直没有被任何驱动占用;
+          只有我们手动 export 之后才出现 "gpio-433 (sysfs) out hi"。
+  4) 复位脚卡在 0, 传感器就永远处于复位, I2C 不 ACK —— 这解释了之前所有的怪现象
+     (MCLK 明明在跑 clk_cam0=24000000 enable_count=1、引脚复用全对、控制器正常、
+      却连一个器件都扫不到)。
+
+7.3 修法(已落地): snsr_rst.ko + 开机先加载
+--------------------------------------------------------------------------------
+  1) 新增极小模块 tools/snsr_rst.c -> snsr_rst.ko, 只干一件事:
+       gpio_request(433, "snsr-rst-fix"); gpio_direction_output(433, 1);
+     卸载时拉低并释放。GPIO 号可用参数覆盖: insmod snsr_rst.ko gpio=433 active_low=1
+  2) 编译(对着目标内核树, 与修 Oops 时同一套环境):
+       make -C /home/chen/kbuild/linux_5.10 \
+            O=/home/chen/kbuild/build/sg2002_milkv_duo256m_glibc_arm64_sd \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=<snsr_rst 目录> modules
+  3) 装机: /mnt/system/ko/snsr_rst.ko
+  4) ★ 必须在 cvi_mipi_rx.ko **之前**加载(否则可能被 cif 抢走, 或在它之后才拉高):
+       改 /mnt/system/ko/loadsystemko.sh, 在 cvi_mipi_rx.ko 那行前插一行:
+         insmod /mnt/system/ko/snsr_rst.ko
+       原文件已备份为 loadsystemko.sh.bak_20260930
+  5) 验证(冷启动, 全部实测通过):
+       dmesg | grep -c 'Unable to handle kernel|Internal error: Oops'   -> 0
+       dmesg | grep snsr_rst                                            -> 已拉高(释放复位)
+       cat /sys/kernel/debug/gpio | grep gpio-433                       -> out hi
+       i2cdetect -y -r 2                                                -> 出现 37
+       /root/camera-diag.sh                                             -> 总判定: 通过
+  6) 最终结果: camera-test.sh 完整跑通 ——
+       "ViPipe:0,===GC2083 1080P 30fps 10bit LINE Init OK!==="
+       "rtsp://127.0.1.1/h264" + "Enter TDL thread / Enter encoder thread"
+       人脸检测出结果: "Golden 1464 1024 2327"
+
+7.4 顺手修掉的一个坑: camera-test.sh 被残缺程序遮蔽
+--------------------------------------------------------------------------------
+  1) 原 /mnt/system/usr/bin/camera-test.sh 里写的是 `sample_vi_fd <cvimodel>`,
+     靠 PATH 找程序; 而 /root 下有个 **同名但残缺** 的 23048 字节 sample_vi_fd,
+     在 /root 目录里执行时会被优先命中, 只报
+       "Failed to get senor infomation from ini file" 就退出(退出码 255)。
+  2) 已把 camera-test.sh 改成绝对路径:
+       exec /mnt/system/usr/bin/ai/sample_vi_fd /mnt/cvimodel/scrfd_768_432_int8_1x.cvimodel
+     原文件备份为 camera-test.sh.bak_20260930。
+  3) 真程序是 /mnt/system/usr/bin/ai/sample_vi_fd (155960 字节);
+     /root/sample_vi_fd (23048 字节) 不要用。
+
+7.5 最终修法(推荐): 重编 cvi_mipi_rx.ko, 而不是打补丁
+--------------------------------------------------------------------------------
+  1) 编译(与根因①同一套环境/内核树):
+       OSDRV=/home/chen/milkv-duo256-develop/osdrv
+       NEWK=/home/chen/kbuild/linux_5.10
+       NEWB=/home/chen/kbuild/build/sg2002_milkv_duo256m_glibc_arm64_sd
+       cat > "$OSDRV/interdrv/cif/.kbwrap.mk" <<EOF
+       include \$(CURDIR)/Makefile
+       KBUILD_EXTRA_SYMBOLS := $OSDRV/interdrv/base/Module.symvers
+       include $NEWK/Makefile
+       EOF
+       export PATH=/home/chen/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin:$PATH
+       export CVIARCH=CV181X CVIARCH_L=cv181x ARCH=arm64
+       cd "$OSDRV/interdrv/cif"
+       make -C "$NEWK" O="$NEWB" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            M="$PWD" -f "$PWD/.kbwrap.mk" modules
+       # 产物 cvi_mipi_rx.ko: 95448 字节, md5 82033443bb66970eec10b0a5b434432e
+  2) 装机并冷启动(板子侧):
+       cp -n /mnt/system/ko/cvi_mipi_rx.ko /root/ko_backup_20260930/cvi_mipi_rx.ko.orig
+       cp -f /root/cvi_mipi_rx.clean.ko /mnt/system/ko/cvi_mipi_rx.ko
+       sync ; reboot
+  3) 验收(冷启动实测, 板上已通过):
+       dmesg | grep rst_pin     -> "cif a0c2000.cif: rst_pin = 433, pol = 1"
+       lsmod | grep snsr_rst    -> 0 个(不需要了)
+       cd /root && /mnt/system/usr/bin/camera-test.sh
+         -> "ViPipe:0,===GC2083 1080P 30fps 10bit LINE Init OK!==="
+         -> "rtsp://127.0.1.1/h264"
+         -> "Enter TDL thread" / "Enter encoder thread"
+         -> 人脸检测 "Golden 1464 1024 2327"
+  4) 复位脚的正确时序(必须知道, 否则会误判):
+       a) 开机后 cif probe: 只 **申请** 引脚, 不拉高 ->
+          调试口显示 `gpio-433 (...) in  lo` (input, 低) —— 这是**正常**的;
+       b) 跑 camera-test.sh 时, 用户态经 ioctl(实现在 sample_common_vi.c 的
+          SAMPLE_COMM_VI_UnresetSensor -> CVI_MIPI_SetSensorReset(devno,0))
+          才把引脚设成 out hi;
+          实测抓到的轨迹: t=0~2 是 `in lo`, t=3 起变 `out hi`;
+       c) 所以 **不能** 拿"开机后 gpio-433 是 in lo"当作故障判据。
+  5) 备用手段(仅在无法重编 ko 时用): 自写 snsr_rst.ko 在 cif 之前加载, 直接
+     把 gpio-433 设成 out hi。它的副作用是让 cif 的 gpio_request 返回 -EBUSY,
+     但驱动对此本来就静默返回, 不影响功能。现已改为不加载, 文件保留备用:
+       #insmod /mnt/system/ko/snsr_rst.ko  # 备用: ABI 修复后不再需要(2026-09-30)
+
+7.6 一堆同类隐患: /mnt/system/ko 下还有 180 个 2025-05-30 的旧模块
+--------------------------------------------------------------------------------
+  1) 实测统计: /mnt/system/ko/*.ko 共 185 个, 其中 **180 个** 仍是 2025-05-30
+     的预编译产物, 只有 5 个是本次重编/新增的:
+       cv181x_sys.ko / cv181x_base.ko / snsr_i2c.ko / cvi_mipi_rx.ko / snsr_rst.ko
+  2) 也就是说: 只要内核一重编, 这 180 个都可能像 snsr_i2c(直接崩) 和
+     cvi_mipi_rx(静默失败) 一样出问题 —— 只是有些还没被用到而已。
+  3) 建议: 以后重编内核后, 把 /mnt/system/ko 下**真正会被加载**的那批一起重编
+     (loadsystemko.sh 里 insmod 的那些), 而不是只重编内核本体。
+     本次已重编的就是 loadsystemko.sh 里与摄像头/显示相关的那几个。
+
+================================================================================
+  八、常见故障与排查 (补充 2026.9.28-小核-帧率修复与热更.txt 第六章)
+================================================================================
+
+8.1 【本次】camera-test.sh 停在 vi init failed
+--------------------------------------------------------------------------------
+  1) 现象: 见 2.1 节第 1) 条; 前面必有 "family ID request : receive error"。
+  2) 定位: 这句话来自 /mnt/system/usr/lib/libsys.so, 含义就是"I2C 读不到传感器 ID"。
+  3) 判据: i2cdetect 扫 i2c-2 看不到 0x37 (见 3.3 节)。
+  4) 处理: 走 5.1 节的硬件排查顺序; 一条命令版见 4.1 节的 camera-diag.sh。
+
+8.2 【易误判】/root/sample_vi_fd 报 Failed to get senor infomation from ini file
+--------------------------------------------------------------------------------
+  1) 现象: 在 /root 下手敲 /root/sample_vi_fd ... , 只打印到
+       Failed to get senor infomation from ini file (/mnt/data/sensor_cfg.ini).
+     就退出, 退出码 255, 连 MMF Version 都不打印。
+     两个参数写法都一样(相对路径 ./sample_vi_fd x.cvimodel, 或绝对路径), 都失败。
+  2) 原因: **/root 下这个 23048 字节的 sample_vi_fd 与 /mnt/system/usr/bin/ai/ 下
+     那个 155960 字节的, 是两个不同的构建产物**, 这一点用内嵌字符串可以硬证:
+       a) /root/sample_vi_fd 调用表里有 SAMPLE_PLAT_VI_INIT / SAMPLE_COMM_SYS_Init /
+          SAMPLE_COMM_VPSS_Init, 但**没有 CVI_SYS_Init**;
+       b) /mnt/system/usr/bin/ai/sample_vi_fd 有完整的 CVI_SYS_Init / CVI_SYS_IonMmap /
+          CVI_SYS_MmapCache / CVI_SYS_RegisterThermalCallback / CVI_SYS_VI_Open 等。
+     也就是说: 真程序会先把中间件系统初始化起来(CVI_SYS_Init 建立 ion/内存映射,
+     注册温控回调), 再走 VI; 而 /root 那个不做这一步, 于是在读完 ini 之后就报
+     "Failed to get senor infomation" 直接返回 —— 它根本走不到摄像头。
+  3) 判据(一条命令区分):
+       strings /root/sample_vi_fd | grep -c CVI_SYS_Init                  -> 0
+       strings /mnt/system/usr/bin/ai/sample_vi_fd | grep -c CVI_SYS_Init -> 有
+  4) 处理: 一律用真程序。本文 7.4 节已把 camera-test.sh 改成绝对路径, 所以
+     直接跑 camera-test.sh 就是对的:
+       cd /root && camera-test.sh
+     实测同一条命令下, 真程序立刻出 "===GC2083 1080P 30fps 10bit LINE Init OK!==="。
+  5) 注意: 这两个程序输出的 ini 解析段落**逐行一样**, 所以光看那几行分辨不出来,
+     必须看后面有没有 "MMF Version" / "GC2083 ... Init OK" 才能判断。
+
+8.3 【易误判】内核刷 "i2c_designware 4010000.i2c: controller timed out"
+--------------------------------------------------------------------------------
+  1) 现象: dmesg 里每约 1 秒一条, 看起来很像摄像头在反复失败。
+  2) 真相: 0x4010000 是 **i2c-1**(GP4/GP5), 不是摄像头的 i2c-2(0x4020000),
+     见 1.3 节。所以这条与摄像头无关, 不要拿它当证据。
+  3) 补充: 同一时段 dmesg 里成对出现的
+       No valid mailbox is available / RTOS_CMDQU_SEND_WAIT timeout
+     是 IPCM 邮箱被占满的老问题, 见 2026.9.28-小核-帧率修复与热更.txt 6.1 节, 也与摄像头无关。
+  4) 修复 ko 之后多了一个新情况: snsr_i2c 会在每条 I2C 总线上按 0x3D 挂一个桩
+     I2C 客户端(cvi_info 里 I2C_BOARD_INFO("sensor_i2c", 0x7b>>1)), 于是
+     `i2cdetect -y -r 1` 会卡很久(实测 26 秒才被打断)。所以自检脚本现在**先扫
+     i2c-2**(摄像头那条), 并且每条总线都加了 20 秒 timeout。
+
+8.4 ★【重要纠正】"family ID request : receive error" 与摄像头**无关**
+--------------------------------------------------------------------------------
+  1) 本次排障一开始把这句话当成"摄像头没应答"的证据, 这是**错的**, 特此订正。
+  2) 真正的出处: cvi_mpi/modules/sys/src/cvi_thermal.c 第 127 行。
+        nl_request_msg.g.cmd = CTRL_CMD_GETFAMILY;      // 通用 netlink 查家族
+        ... snprintf(family_name, ..., "thermal_event");
+        ... 失败时: fprintf(stderr, "family ID request : receive error\n");
+     即: **温控组件**向内核问 "thermal_event" 这个 genl 家族名, 内核没这个家族,
+     于是报这句。它跟 I2C、跟传感器 ID 一点关系都没有。
+  3) 判据: 该字符串只存在于 libsys.so(以及各 sample 程序), **不在** libsns_full.so
+     也不在任何 .ko 里。早期记录里"这句话来自 libsys.so"这一半是对的, 但把它解释成
+     "驱动读不到传感器 ID" 是错的。
+  4) 教训: 报错字符串要追到**源码文件行号**再下结论。认错了出处, 就会把整条排查方向
+     带偏 —— 本次就因此先去怀疑排线, 而真正的第一道门(内核 Oops)是后来才发现的。
+  5) 那么摄像头失败的"真证据"是什么:
+       a) sample_vi_fd 输出停在 "[SAMPLE_COMM_VI_StartMIPI]-494: sensor 0
+          stDevAttr.devno 0" 然后 "vi init failed. s32Ret: 0xffffffff !";
+       b) 内核日志里 vi_open -> vpss_open -> vi_release -> vpss_release(起来又立刻退);
+       c) i2cdetect 扫 i2c-2 时 **看不到 0x37**。
+     这三条才是判定"摄像头有没有应答"的依据。
+
+================================================================================
+  九、相关文件位置速查
+================================================================================
+
+  1) 测试脚本      : /mnt/system/usr/bin/camera-test.sh        (已改绝对路径)
+  2) ★真测试程序   : /mnt/system/usr/bin/ai/sample_vi_fd   (155960 字节, md5 c900ab1690d1988e44fdd43cbb78458a)
+  3) ★残缺/别用    : /root/sample_vi_fd                   (23048 字节, md5 86ba433b7407669090bcd2b36c4ab9bc;
+                                                            无 CVI_SYS_Init, 跑不到摄像头, 见 8.2)
+  4) 模型文件      : /mnt/cvimodel/scrfd_768_432_int8_1x.cvimodel
+  5) 传感器配置    : /mnt/data/sensor_cfg.ini -> sensor_cfg_GC2083.ini
+  6) 传感器驱动库  : /mnt/system/usr/lib/libsns_full.so
+  7) 出错字符串    : /mnt/system/usr/lib/libsys.so  ("family ID request : receive error")
+  8) 摄像头内核模块: /mnt/system/ko/{cvi_mipi_rx,snsr_i2c,cv181x_vi,cv181x_vpss}.ko
+  9) 板级引脚初值  : $SDK/build/boards/cv181x/sg2002_milkv_duo256m_glibc_arm64_sd/
+                     u-boot/cvi_board_init.c
+ 10) 自检脚本      : /root/camera-diag.sh (本文件第四章)
+ 11) 官方文档      : https://milkv.io/zh/docs/duo/camera/gc2083
+ 12) 开机完整日志  : /root/dmesg_boot.txt (本次排障时在板上 dump 的, 含那个 Oops)
+ 13) 驱动源码树    : /home/chen/milkv-duo256-develop  (含 osdrv, snsr_i2c 等全部 ko 源码)
+ 14) 内核构建树    : /home/chen/duo-sdk-v2/linux_5.10 (+ build/sg2002_milkv_duo256m_glibc_arm64_sd)
+ 15) 摄像头修复模块: /mnt/system/ko/snsr_rst.ko  (源码 tools/snsr_rst.c, 详见第七章)
+ 16) 硬件探测工具  : /root/camprobe           (源码 tools/camprobe.c)
+ 17) ko 备份       : /root/ko_backup_20260930/  (修 Oops 前的 sys/base/snsr_i2c)
+ 18) 脚本备份      : /mnt/system/ko/loadsystemko.sh.bak_20260930
+                     /mnt/system/usr/bin/camera-test.sh.bak_20260930
+
+================================================================================
+  十、变更记录  (后来者请往下追加)
+================================================================================
+【每条记录的格式】
+  ─────────────────────────────────────────────────────────────────────────────
+  YYYY-MM-DD HH:MM | 改动人 | 一句话标题
+  ─────────────────────────────────────────────────────────────────────────────
+    1) 做了什么 / 为什么:
+    2) 完整命令(可直接复制执行):
+    3) 结果 / 验证:
+    4) 教训(可选):
+【时间要求】精确到分钟(UTC+8); 旧的、确实取不到分钟时间的记录, 只写日期即可。
+                                     ——— 以下按时间先后排列 ———
+
+--------------------------------------------------------------------------------
+2026-09-30 00:5x | (本会话) | 建本文件: 定位"摄像头上不来"的根因在硬件侧, 并留下自检脚本
+--------------------------------------------------------------------------------
+  1) 做了什么 / 为什么: 用户按 milkv.io 的 CAM-GC2083 文档跑 camera-test.sh 失败
+     (vi init failed, 前面有 family ID request : receive error)。本次把这个失败从头
+     分层查清: 配置层、SoC 引脚层、总线层、程序层, 逐层留下判据, 并写成第四章那条
+     一条命令自检的 /root/camera-diag.sh, 免得后面的人反复瞎试。
+  2) 完整命令(可直接复制执行):
+       # [板子] 传感器配置
+       ls -l /mnt/data/sensor_cfg.ini
+       cat /mnt/data/sensor_cfg.ini
+       # [板子] 摄像头 I2C 引脚复用(期望 4/4/4/3)
+       devmem 0x030011AC 32
+       devmem 0x030011B0 32
+       devmem 0x030011B8 32
+       devmem 0x030011A8 32
+       # [板子] 扫总线找 0x37
+       i2cdetect -l
+       i2cdetect -y -r 1
+       i2cdetect -y -r 2
+       i2cdetect -y -r 3
+       # [板子] 复现失败(必须用绝对路径, 见 1.5 节)
+       export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd
+       cd /root
+       timeout 30 /mnt/system/usr/bin/ai/sample_vi_fd /mnt/cvimodel/scrfd_768_432_int8_1x.cvimodel
+       # [板子] 一条命令自检
+       chmod +x /root/camera-diag.sh && /root/camera-diag.sh
+  3) 结果 / 验证:
+       a) 配置层: sensor_cfg.ini -> sensor_cfg_GC2083.ini, 与官方 SDK 模板逐字节一致。
+       b) 引脚层: FMUX 0x030011AC/B0/B8/A8 = 0x4/0x4/0x4/0x3, 全对;
+                  LCD 侧 SD1 组(0x030010E4/E0/D0)= 0x1/0x1/0x1, 屏照常工作。
+       c) 总线层: i2c-1/2/3 三条全扫, 满屏 " -- ", 连 0x37 都没有;
+                  边跑测试边扫也一样; 扫描时不报 controller timed out。
+                  => 控制器好、时钟在走, 就是没有器件应答。
+       d) 程序层: 用 /mnt/system/usr/bin/ai/sample_vi_fd 复现出的输出与用户现象逐行一致
+                  (含 /dev/cvi-vo 提示、family ID request : receive error、
+                   vi init failed. s32Ret: 0xffffffff)。
+       e) 对照:  /root/sample_vi_fd(23048 字节) 只报到
+                  "Failed to get senor infomation from ini file" 就退, 退出码 255。
+       f) 结论: SoC 侧软件与引脚全部正确, 失败在"模组/排线/座子没通";
+               下一步是 5.1 节的硬件排查(先断电重插 FPC、确认金手指朝向)。
+               ★ 本条结论已被下面第 2 条修正: 查硬件之前必须先排掉那个内核模块
+                 Oops(见第六章), 否则 i2c-2 上本来就看不到应答。
+  4) 教训:
+       a) "family ID request : receive error" 等于"I2C 上没有应答", 查它要先用
+          i2cdetect 证明总线是空的, 而不是去改 lane_id / pn_swap。
+       b) /root 下的 sample_vi_fd 与 /mnt/system/usr/bin/ai/ 下那个不是同一个程序;
+          在 /root 手敲 camera-test.sh 靠"当前目录在 PATH 里"才跑得起来, 换目录就
+          not found —— 要复现一律写绝对路径。
+       c) 别把 "i2c_designware 4010000.i2c: controller timed out" 当成摄像头故障:
+          0x4010000 是 i2c-1, 摄像头在 0x4020000 (见 1.3 节)。
+       d) 别把 "Cannot open '/dev/cvi-vo'" 当成失败原因: cv181x_vo.ko 本来就没加载,
+          与本测试无关。
+       e) 本次改动只新增了一个自检脚本 /root/camera-diag.sh, 没动 fip.bin、
+          没动小核固件、没重启系统。
+
+--------------------------------------------------------------------------------
+2026-09-30 01:1x | (本会话) | 【真根因】snsr_i2c.ko 开机 insmod 就 Oops —— 旧 ko 与重编内核不匹配
+--------------------------------------------------------------------------------
+  1) 做了什么 / 为什么: 用户重跑 camera-diag.sh 后, 第 4 步把开机日志里的
+     "init_module+0x28/0x1000 [snsr_i2c]" 带了出来 —— 那是调用栈的一行, 说明
+     snsr_i2c.ko 在开机 insmod 时就崩了。顺着这条线查到真正的根因, 并确认
+     "摄像头为什么起不来" 的第一道门是驱动模块本身, 而不是排线。
+  2) 完整命令(可直接复制执行):
+       # [板子] 看崩溃标志 + 存全量日志
+       dmesg | grep -nE 'Unable to handle|Call trace|Internal error|Oops|snsr_i2c'
+       dmesg > /root/dmesg_boot.txt
+       grep -n 'snsr_i2c' /root/dmesg_boot.txt
+       # [板子] 确认平台设备没建起来
+       ls /sys/bus/platform/devices/ | grep -iE 'sensor|snsr'
+       # [板子] 确认 ko 的日期远早于内核
+       ls -l /mnt/system/ko/snsr_i2c.ko /mnt/system/ko/cvi_mipi_rx.ko
+       cat /proc/version
+       # [WSL] 把 ko 拷回来反汇编, 看它假定的 struct 尺寸
+       mkdir -p /tmp/ko_check
+       setsid scp -o StrictHostKeyChecking=no root@192.168.42.1:/mnt/system/ko/snsr_i2c.ko /tmp/ko_check/
+       /home/chen/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-objdump -dr -j .init.text /tmp/ko_check/snsr_i2c.ko
+       # [WSL] 确认驱动源码与内核构建树分别在哪
+       ls /home/chen/milkv-duo256-develop/osdrv/interdrv/snsr_i2c/common/snsr_i2c.c
+       ls -l /home/chen/duo-sdk-v2/linux_5.10/build/sg2002_milkv_duo256m_glibc_arm64_sd/vmlinux
+  3) 结果 / 验证:
+       a) dmesg 每次开机必有:
+            Unable to handle kernel paging request at virtual address 007265746e692f7e
+            Internal error: Oops: 96000004 [#1] PREEMPT SMP
+            pc : is_software_node+0x10/0x34 / lr : software_node_notify+0x40/0xf4
+            Call trace: ... device_add+0x174/0x6a0
+                        platform_device_add+0xec/0x228
+                        platform_device_register+0x54/0x64
+                        init_module+0x28/0x1000 [snsr_i2c]
+          那个"地址"是 ASCII("~/init..."), 即内核把字符串指针当 fwnode 解引用了。
+       b) /sys/bus/platform/devices/ 下没有 sensor_i2c —— 平台设备确实没注册成功;
+          模块自己的 "Failed to init res for snsr" 等三条打印一条都没有。
+       c) 板上 /mnt/system/ko/*.ko 全是 May 30 2025 的预编译产物; 而内核是
+          "Sun Sep 27 20:42:13 CST 2026" 重编的(vmlinux 时间戳 Sep 27 20:42 对得上),
+          内核改动见 README 第 7 节(DTS 加 SPI2 DMA/sysdma_remap、defconfig、spidev bufsiz)。
+       d) 反汇编 init_module 看到该 ko 认为 platform_device/pdrv 的布局是
+          .data+0x50 / .data+0x288(即 struct device 的 release 落在 pdev 内偏移 0x40),
+          与当前内核头文件不符 —— 偏移错位导致 fwnode 读到垃圾。
+       e) 结论: 根因 = "重编了内核, 没重编 /mnt/system/ko 下的驱动模块"。
+          摄像头用不了的第一道门是这个 Oops; 修好它之后才轮得到查 I2C 上有没有
+          0x37、再轮到排线。
+  4) 教训:
+       a) 看到 dmesg 里孤零零一行 "xxx+0x28/0x1000 [模块名]" 要警觉 —— 那是 Oops
+          调用栈的分帧行, 说明这个模块崩过, 不是普通日志。
+       b) 只要动了内核源码/配置并重编, /mnt/system/ko 下所有 ko 必须用**同一棵内核树**
+          重编; 否则 vermagic 照样是 "5.10.4-tag-" 对得上、内核照样加载, 但 ABI 已错位,
+          表现就是这种莫名其妙的 Oops。
+       c) 排障顺序固定为: 先看驱动模块崩没崩(dmesg Oops), 再看总线有没有器件
+          (camera-diag.sh), 最后才怀疑硬件 —— 反过来会白拆一遍机器。
+       d) 待办: 本工程的构建树 duo-sdk-v2 **没有** osdrv 目录, 驱动源码在
+          /home/chen/milkv-duo256-develop/osdrv/; 修的时候把 KERNEL_DIR 指向
+          duo-sdk-v2 的内核树来编 snsr_i2c(先编 base, 见该模块 Makefile 与 osdrv
+          顶层规则 "snsr_i2c: base")。
+
+--------------------------------------------------------------------------------
+2026-09-30 02:2x ~ 02:5x | (本会话) | 已修: 重编 sys/base/snsr_i2c 三个 ko, 内核 Oops 归零
+--------------------------------------------------------------------------------
+  1) 做了什么 / 为什么: 按上面那条待办把 ko 重编出来并上板验证。内核 Oops 是第一道门,
+     必须先用同一棵内核树重编模块, 才能知道"摄像头到底还剩下什么问题"。
+  2) 完整命令(可直接复制执行) —— 在 WSL 里, 全部以 root 跑:
+       # (1) 复制内核源码与构建树到安全目录, 绝不动在用的那棵
+       mkdir -p /home/chen/kbuild/build
+       cp -a /home/chen/duo-sdk-v2/linux_5.10 /home/chen/kbuild/linux_5.10
+       cp -a /home/chen/duo-sdk-v2/linux_5.10/build/sg2002_milkv_duo256m_glibc_arm64_sd \
+             /home/chen/kbuild/build/sg2002_milkv_duo256m_glibc_arm64_sd
+       # (2) 补 modules_prepare(生成 scripts/module.lds 等)
+       export PATH=/home/chen/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin:$PATH
+       cd /home/chen/kbuild/linux_5.10
+       make O=/home/chen/kbuild/build/sg2002_milkv_duo256m_glibc_arm64_sd \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+       # (3) ★ modules_prepare 会把 kernel.release 写成 "5.10.4"(丢了 "-tag-"), 必须改回来,
+       #     否则 vermagic 不匹配、模块加载不上
+       printf '5.10.4-tag-' > /home/chen/kbuild/build/sg2002_milkv_duo256m_glibc_arm64_sd/include/config/kernel.release
+       printf '#define UTS_RELEASE "5.10.4-tag-"\n' > /home/chen/kbuild/build/sg2002_milkv_duo256m_glibc_arm64_sd/include/generated/utsrelease.h
+       # (4) 每个模块目录下放一个 wrapper(include 原 Makefile + 内核顶层 Makefile),
+       #     这样才能带 O= 走 kbuild, 又不用改原 Makefile
+       OSDRV=/home/chen/milkv-duo256-develop/osdrv
+       NEWK=/home/chen/kbuild/linux_5.10
+       NEWB=/home/chen/kbuild/build/sg2002_milkv_duo256m_glibc_arm64_sd
+       for mod in sys base snsr_i2c; do
+         extra=""
+         [ "$mod" = base ]     && extra="$OSDRV/interdrv/sys/Module.symvers"
+         [ "$mod" = snsr_i2c ] && extra="$OSDRV/interdrv/base/Module.symvers"
+         cat > "$OSDRV/interdrv/$mod/.kbwrap.mk" <<EOF
+       include \$(CURDIR)/Makefile
+       KBUILD_EXTRA_SYMBOLS := $extra
+       include $NEWK/Makefile
+       EOF
+       done
+       # (5) ★ CVIARCH_L 必须导出(kbuild 子 make 里没有 osdrv 顶层来推导它, 否则头文件路径会缺)
+       export CVIARCH=CV181X CVIARCH_L=cv181x ARCH=arm64
+       # (6) 按依赖顺序编: sys -> base -> snsr_i2c
+       for mod in sys base snsr_i2c; do
+         cd "$OSDRV/interdrv/$mod"
+         make -C "$NEWK" O="$NEWB" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+              M="$PWD" -f "$PWD/.kbwrap.mk" modules
+       done
+       # (7) 上板: 备份旧 ko -> 传新的 -> 覆盖 -> 重启
+       #     (板子侧)
+       mkdir -p /root/ko_backup_20260930
+       cp -f /mnt/system/ko/cv181x_sys.ko  /mnt/system/ko/cv181x_base.ko \
+             /mnt/system/ko/snsr_i2c.ko   /root/ko_backup_20260930/
+       cp -f /root/ko_new/cv181x_sys.ko  /mnt/system/ko/cv181x_sys.ko
+       cp -f /root/ko_new/cv181x_base.ko /mnt/system/ko/cv181x_base.ko
+       cp -f /root/ko_new/snsr_i2c.ko    /mnt/system/ko/snsr_i2c.ko
+       sync ; reboot
+  3) 结果 / 验证:
+       a) 三个 ko 编出: cv181x_sys.ko 41128 字节 (md5 27ebdb82c8811f20b9f3b397c1dc6da6)、
+          cv181x_base.ko 129744 (3ecb29886fa9f59c016ef45735239a46)、
+          snsr_i2c.ko 16792 (bc4282a2af35364a51fa423910cca675, 旧的只有 14632)。
+       b) vermagic 新旧一致: "5.10.4-tag- SMP preempt mod_unload aarch64"。
+          uses 符号全部可解析(含 vip_sys_register_cmm_cb), depends=cv181x_base。
+       c) 结构性证据: 反汇编 init_module, 旧 ko 认为 platform_driver 在 .data+0x288,
+          新 ko 是 .data+0x350 —— 偏移整整差了 0xC8, 正是当年崩的原因。
+       d) 重启后(板子实测):
+            dmesg | grep -c 'Unable to handle kernel|Internal error: Oops'  -> 0
+            dmesg 里出现 "snsr_i2c snsr_i2c: i2c:-------hook 1 / 2 / 3"
+            ls /sys/bus/platform/drivers/snsr_i2c/ -> snsr_i2c (平台设备已绑定)
+            lsmod: snsr_i2c 16384, cv181x_base 77824, cv181x_sys 61440 全部正常
+          小核也没被影响: /tmp/lcd_reload.log 显示热更 state=1 200.1ms,
+          build id 读回 0x484A0009, auto.sh 的 lcd_sender mon 仍在跑。
+       e) 但摄像头仍然起不来(见下面第 3 条记录): vi init failed. s32Ret: 0xffffffff,
+          i2c-2 上依旧扫不到 0x37。
+  4) 教训:
+       a) modules_prepare 会重算 kernel.release, 把 CONFIG_LOCALVERSION_AUTO 带来的
+          "-tag-" 后缀弄丢 —— 编完必须核对 vermagic, 否则白忙。
+       b) osdrv 的模块 Makefile 用 $(PWD) 拼头文件路径, 而 $(PWD) 在 kbuild 子 make 里
+          会变成内核目录; 所以要么进模块目录再调 make, 要么用 wrapper 里的 $(CURDIR)。
+       c) CVIARCH_L 是 osdrv 顶层算出来再传下去的, 单独编某个模块时必须自己导出,
+          否则 chip 相关的 -I 路径会变成 include/chip//uapi 这种空目录, 直接编译失败。
+       d) 编完**不要**立刻覆盖生产 ko 就重启: 先备份、再核对 md5、再重启验证,
+          万一新 ko 有问题可以用 /root/ko_backup_20260930/ 原地回滚。
+
+--------------------------------------------------------------------------------
+2026-09-30 02:5x ~ 03:0x | (本会话) | 纠正: family ID 那句是温控的; 摄像头真错误在 sensors/VI
+--------------------------------------------------------------------------------
+  1) 做了什么 / 为什么: 修好 ko 后重跑摄像头测试, 失败现象一模一样。这才回头去查
+     "family ID request : receive error" 到底是谁打的 —— 结果发现它根本不是摄像头相关,
+     之前的解释是错的, 必须订正, 否则会一直把人往排线上带。
+  2) 完整命令(可直接复制执行):
+       # [WSL] 在驱动源码里搜这句话的真正出处
+       grep -rn "family ID request" /home/chen/milkv-duo256-develop/ | head -5
+       # 命中: cvi_mpi/modules/sys/src/cvi_thermal.c:127
+       sed -n '90,140p' /home/chen/milkv-duo256-develop/cvi_mpi/modules/sys/src/cvi_thermal.c
+       # [板子] 修好 ko 后重跑真测试
+       export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd
+       cd /root
+       timeout 40 /mnt/system/usr/bin/ai/sample_vi_fd /mnt/cvimodel/scrfd_768_432_int8_1x.cvimodel
+  3) 结果 / 验证:
+       a) 出处确认: cvi_thermal.c 用 CTRL_CMD_GETFAMILY 问内核 netlink "thermal_event"
+          这个 genl 家族, 内核没有该家族 -> 打 "family ID request : receive error"。
+          与 I2C / 传感器 ID 完全无关(详见 7.4 节)。
+       b) 修好 ko 后 sample_vi_fd 输出与修前逐行相同(仍停在 vi init failed),
+          即**这个 Oops 不是摄像头起不来的唯一原因**, 还有第二个独立问题。
+       c) 内核日志这次能看到真正的失败流程:
+            vi_open:6223(): -  /  vpss_open
+            vi_release:6246(): -  /  vpss_release      <- 起来又立刻退
+       d) i2c-2 上依然扫不到 0x37; 而 i2c-2 控制器本身是好的:
+            IC_CON=0x63(标准模式/从地址7位/重启使能), IC_SDA_HOLD=0x1E,
+            扫描瞬时完成(0.02 秒), 没有任何 controller timed out(i2c-2 一条都没有)。
+       e) 结论: #1 内核 Oops 已彻底修好(返回值 0); #2 "摄像头不在 I2C 上应答" 是另一个
+          独立问题, 现在所有软件层面(模块/总线号/引脚复用/时钟/配置/固件含 GC2083 驱动)
+          都已验证正确, 因此 #2 指向硬件侧。
+  4) 教训:
+       a) ★ 报错字符串必须追到"源码文件 + 行号"再解释, 不能凭字面猜。本次就是凭字面
+          把温控的报错当成了摄像头读 ID 失败, 直接带偏了第一轮排查。
+       b) 一次只改一个变量: 先修 ko 并确认 Oops 归零(结论明确), 再谈摄像头剩下来的问题,
+          否则两个问题会互相掩盖。
+       c) 修好一个 bug 不等于修好症状 —— 要拿同一个测试命令复测, 逐行对比输出,
+          确认到底变了没有。
+
+--------------------------------------------------------------------------------
+2026-09-30 03:0x | (本会话) | 【已解决】摄像头跑通: 根因是复位脚 XGPIOC_17 从未被拉高
+--------------------------------------------------------------------------------
+  1) 做了什么 / 为什么: 用户坚持"硬件完全没问题", 于是不再猜硬件, 改为写工具直接量。
+     结果量到复位脚 DDR=0(从未设成输出), 传感器被按在复位态; 用 sysfs 拉高后 0x37
+     立刻出现、camera-test.sh 直接出图。随后做成开机自动修复, 并冷启动复验通过。
+  2) 完整命令(可直接复制执行):
+       # [WSL] 编译硬件在环探测工具
+       GCC=/home/chen/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc
+       $GCC -O2 -static -o /tmp/camprobe <仓库>/tools/camprobe.c
+       scp /tmp/camprobe root@192.168.42.1:/root/camprobe
+       # [板子] 量复位脚 + 全总线扫描
+       /root/camprobe
+       # [板子] 手动验证: 把复位脚拉高, 看 0x37 是否出现
+       echo 433 > /sys/class/gpio/export
+       echo out > /sys/class/gpio/gpio433/direction
+       echo 1   > /sys/class/gpio/gpio433/value
+       i2cdetect -y -r 2
+       # [WSL] 编译修复模块
+       make -C /home/chen/kbuild/linux_5.10 \
+            O=/home/chen/kbuild/build/sg2002_milkv_duo256m_glibc_arm64_sd \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=<snsr_rst 目录> modules
+       # [板子] 装机 + 开机自动加载
+       cp -f /root/snsr_rst.ko /mnt/system/ko/snsr_rst.ko
+       cp -n /mnt/system/ko/loadsystemko.sh /mnt/system/ko/loadsystemko.sh.bak_20260930
+       sed -i 's|^insmod /mnt/system/ko/cvi_mipi_rx.ko|insmod /mnt/system/ko/snsr_rst.ko\ninsmod /mnt/system/ko/cvi_mipi_rx.ko|' /mnt/system/ko/loadsystemko.sh
+       sync ; reboot
+       # [板子] 冷启动验证
+       dmesg | grep snsr_rst
+       i2cdetect -y -r 2
+       /root/camera-diag.sh
+       cd /root && /mnt/system/usr/bin/camera-test.sh
+  3) 结果 / 验证(冷启动后全部实测):
+       a) /root/camprobe 输出: GPIOC DDR=0x00000000(bit17=0, 从未设成输出)、
+          DR=0x00000000; 对 0x37 的 readbyte/write 都是 errno=121(Remote I/O error,
+          即从机不 ACK)。errno=95 只是控制器不支持 SMBus quick, 属正常。
+       b) sysfs 把 gpio-433 拉高后: i2cdetect -y -r 2 的 0x30 行出现 "37"。
+       c) 冷启动: Oops 条数 0; dmesg 有 "snsr_rst: ... gpio-433 已拉高(释放复位)";
+          /sys/kernel/debug/gpio 显示 "gpio-433 (snsr-rst-fix) out hi";
+          lsmod 里 snsr_rst 16384 已加载; i2cdetect -y -r 2 出现 37;
+          /root/camera-diag.sh 总判定: 通过。
+       d) camera-test.sh 完整跑通: "===GC2083 1080P 30fps 10bit LINE Init OK!==="、
+          "rtsp://127.0.1.1/h264"、"Enter TDL thread / Enter encoder thread"、
+          人脸检测结果 "Golden 1464 1024 2327"。
+       e) 新增/改动文件: tools/snsr_rst.c(修复模块源码)、tools/camprobe.c(探测工具)、
+          sdcard/rootfs/mnt/system/ko/snsr_rst.ko、
+          sdcard/rootfs/mnt/system/ko/loadsystemko.sh(加了先加载 snsr_rst)、
+          sdcard/rootfs/mnt/system/usr/bin/camera-test.sh(改绝对路径)。
+  4) 教训:
+       a) ★ 遇到"所有软件都对但器件就是不应答", 别再猜 —— 写个工具把寄存器/电平/
+          总线结果一次性打出来, 比读十遍源码管用。本次 camprobe 一跑就定位。
+       b) ★ DDR=0 说明复位脚是"输入(悬空)"而不是"输出低"; 传感器 RESET 低有效,
+          悬空 = 被按住复位。查 I2C 不通时, 必须确认复位脚**是输出且已释放**,
+          不能只看引脚复用对不对。
+       c) 上游 cif 的 gpio_request 失败时是静默 return 0(一行报错都没有), 这种"闷掉"
+          的错误只能靠外部测量发现。
+       d) 工作区里的同名程序会遮蔽 PATH(见 8.2 节), 这类坑一律用绝对路径最稳。
+       e) 本次改动全部可回滚: ko 备份在 /root/ko_backup_20260930/,
+          loadsystemko.sh 与 camera-test.sh 都有 .bak_20260930 备份。
+
+--------------------------------------------------------------------------------
+2026-09-30 03:1x | (本会话) | 追根: 重编 cvi_mipi_rx.ko 后复位脚自己就好了, 自写补丁退役
+--------------------------------------------------------------------------------
+  1) 做了什么 / 为什么: 用户问"V1 版有没有这个问题"(教程是 V1 的)。为了给准答案,
+     不再靠推断, 直接把 cif 驱动(cvi_mipi_rx.ko)用同一棵内核树重编, 并临时加诊断
+     打印, 然后做对照实验: 关掉自写的 snsr_rst.ko, 看重编的驱动能不能自己拉高复位脚。
+  2) 完整命令(可直接复制执行):
+       # 见 7.5 节第 1) 条(编 cvi_mipi_rx.ko)
+       # [板子] 对照实验: 关掉 snsr_rst, 只留重编的 cif 驱动
+       sed -i 's|^insmod /mnt/system/ko/snsr_rst.ko|#insmod /mnt/system/ko/snsr_rst.ko|' /mnt/system/ko/loadsystemko.sh
+       sync ; reboot
+       # 抓复位脚时序: 跑测试的同时每秒记录一次
+       ( i=0; while [ $i -lt 25 ]; do cat /sys/kernel/debug/gpio | grep gpio-433; sleep 1; i=$((i+1)); done ) > /tmp/gpiowatch.log &
+       cd /root && /mnt/system/usr/bin/camera-test.sh
+  3) 结果 / 验证(全部实测):
+       a) 加了诊断打印的重编驱动输出:
+            cif a0c2000.cif: DIAG snsr-reset[0]: pin=433 pol=1
+            cif a0c2000.cif: DIAG gpio_request(433) = -16
+          说明设备树解析完全正确, 失败点是 gpio_request 返回 -EBUSY, 而驱动对
+          这个失败是 `return 0` 静默吞掉 —— 所以复位脚从未被设成输出。
+       b) 干净版重编驱动(去掉打印, md5 82033443bb66970eec10b0a5b434432e)装机冷启动:
+            dmesg: "cif a0c2000.cif: rst_pin = 433, pol = 1"   <- 申请成功
+            lsmod: snsr_rst 0 个(已关掉)
+       c) ★ 复位脚时序(每秒采样, 决定性):
+            t=00..02  gpio-433 (snsr-rst-gpio) in  lo     <- 开机后未释放(正常)
+            t=03..24  gpio-433 (snsr-rst-gpio) out hi     <- 跑测试时被拉高
+          同时 camera-test.sh 完整跑通(GC2083 LINE Init OK / rtsp / TDL / 人脸检测)。
+       d) 结论:
+            - 上游源码(V1/V2 同源)**没有这个 bug**, 不需要任何补丁;
+            - 出问题的是"旧预编译 .ko 装在重编内核上"这个组合;
+            - 正解 = 重编 cvi_mipi_rx.ko(与根因①同一个道理), 自写 snsr_rst.ko 退役。
+       e) 顺带查清: /mnt/system/ko 下 185 个 ko 里还有 180 个是 2025-05-30 的旧货,
+          只有本次重编的 5 个是新的(见 7.6)。这是本板最大的系统性隐患。
+  4) 教训:
+       a) ★ "答案是 A 还是 B"这种问题, 别用推理回答, 用对照实验回答。本次只花了
+          一次重编 + 一次重启, 就把"要不要打补丁"这个方向性问题彻底钉死。
+       b) ★ 看门狗式采样(每秒记一次寄存器/GPIO 状态)能抓到瞬时状态变化, 比"测试完
+          再看一眼"可靠得多 —— 本次正是这样抓到 in lo -> out hi 的翻转时刻。
+       c) 上游代码里 `if (gpio_request(...)) return 0;` 这种"吞错误"写法极难排查:
+          没有日志、没有返回值、功能静默缺失。给这类点加诊断打印是最快的定位手段。
+       d) 修好之后要把临时手段**撤掉**, 否则两套机制会互相干扰(实测 snsr_rst 占住
+          引脚后, cif 的申请就会返回 -EBUSY)。
+
+--------------------------------------------------------------------------------
+2026-09-30 03:3x | (本会话) | 改规范: 指南文件名改为"日期-类别-问题简述", 并整体改名
+--------------------------------------------------------------------------------
+  1) 做了什么 / 为什么: 原来的文件名只有日期(2026.9.30.txt), 后来的人光看目录
+     不知道哪天解决了哪个方向的问题, 必须逐个打开。按用户要求把命名规范改成
+     "日期 + 主要解决的问题方向", 便于后续定位。
+  2) 完整命令(可直接复制执行):
+       # [PC 仓库] 改名
+       cd "<仓库>/指南"
+       mv 2026.9.28.txt "2026.9.28-小核-帧率修复与热更.txt"
+       mv 2026.9.30.txt "2026.9.30-摄像头-无法出图.txt"
+       # [板子] 同样改名
+       cd /root/指南
+       mv 2026.9.28.txt "2026.9.28-小核-帧率修复与热更.txt"
+       mv 2026.9.30.txt "2026.9.30-摄像头-无法出图.txt"
+       ls -l
+  3) 结果 / 验证:
+       a) 新规范写进 readme.txt 第 1 节: 格式 YYYY.M.D-<类别>-<一句话问题简述>.txt,
+          类别从固定表里选一个: 摄像头 / 显示 / 小核 / 编译 / 系统 / 存储 / 打包 / 其它
+          (见 readme.txt 1.1 节)。
+       b) 两份文件已改名, 文件头里的"文件位置"字段同步更新:
+            2026.9.28-小核-帧率修复与热更.txt
+            2026.9.30-摄像头-无法出图.txt   (本文件)
+       c) 本文件内所有对旧文件名的引用(3 处)已改成新名;
+          camera-diag.sh、README.md、sdcard/rootfs/root/指南/ 两份副本同步更新。
+       d) 注意: image/CHECKSUMS.txt 里记录的仍是**旧镜像内**的文件名
+          (p2:/root/指南/2026.9.28.txt), 那是历史镜像的真实内容, 不去改动;
+          下次重做整卡镜像时自然会变成新名。
+  4) 教训:
+       a) 文件只改名不改内容, 也要在变更记录里留一条 —— 否则后来的人按旧名找不到东西。
+       b) 这份指南有**两份副本**(板上 /root/指南/ 与仓库 sdcard/rootfs/root/指南/),
+          改名必须两边一起做, 否则镜像和板子会对不上。

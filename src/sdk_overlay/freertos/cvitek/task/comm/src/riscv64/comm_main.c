@@ -244,6 +244,15 @@ void prvCmdQuRunTask(void *pvParameters)
 			rtos_cmdq.param_ptr = LCD_MON_RX(sml, fps10);
 			goto send_label;
 		}
+		case LCD_CMD_CAM:
+			/* 大核已把一帧 RGB565(大端) 写进共享内存的 fb 区(协议见
+			 * lcd_shm.h 的 LCD_CMD_CAM), 大核随后发来本命令。
+			 * 这里**只记一笔**: 渲染统一由 LVGL 任务做(lvgl_cam_poll()),
+			 * 因为 LVGL 不是线程安全的, 不能在这个任务里碰任何 LVGL 对象。
+			 * ★ 绝不回 ACK —— 每秒几十帧都回执会把 8 个 mailbox 槽位打满
+			 *   (2026.09.28 记录里那个老坑)。 */
+			lvgl_cam_submit();
+			break;
 		case LCD_CMD_RTOS_RELOAD:
 			/* 固件热更第一跳: 大核要原地覆盖 0x8FE00000 的应用区,
 			 * 所以本任务必须先把控制权交给常驻在 0x8FF90000 的

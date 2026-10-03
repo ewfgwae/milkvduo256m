@@ -1,0 +1,564 @@
+================================================================================
+  Milk-V Duo256M 双核 LCD 监控设备 —— 开发记录
+  日期: 2026-09-30        文件位置: /root/指南/2026.9.30-摄像头-画面显示到屏.txt
+================================================================================
+
+【写法约定见同目录 readme.txt】本文件按"日期-类别-问题简述"命名, 分两大部分:
+  第一部分 "环境与约定" —— 接手的人必须先知道的一切, 一条一个知识点;
+  第二部分 "变更记录"   —— 按时间顺序记流水账, 一条一件事。
+每条记录的时间精确到分钟(UTC+8); 确实取不到准确时间的旧记录只写日期, 不编造。
+
+★ 安全铁律 (三条, 每次动手前先过一遍)
+  1) fip.bin 是唯一的引导固件, 不要随手动它。本板有 SD 读卡器, 最坏情况可以重写整卡
+     救回来, 但要拆机取卡、代价高。
+  2) 改小核固件一律走"热更"(见 2026.9.28-小核-帧率修复与热更.txt 第五章) ——
+     它不碰 fip.bin、不重启系统。
+  3) 改内核/重编内核时: /mnt/system/ko 下的 .ko 必须用**同一棵内核树**一起重编,
+     否则会出现"模块能加载但功能静默失效"甚至内核 Oops
+     (实例见 2026.9.30-摄像头-无法出图.txt 第六章)。
+
+【本文件背景】
+  目标: 把摄像头画面"取中间"显示到 ST7789 屏上, 用 LVGL 显示, 并取消
+        "没有画面时默认的红屏"。
+  结论: **做到一半, 卡在编译环境 ABI 不匹配上**。本文件把已经查清的东西、
+        卡点的精确原因、以及两条可行出路完整记下来, 接手的人可以少走几天弯路。
+
+================================================================================
+  一、目标与架构 (已确定)
+================================================================================
+
+1.1 数据流
+--------------------------------------------------------------------------------
+  1) 摄像头 GC2083 (1920x1080)
+  2) -> VI 采集
+  3) -> VPSS 硬件缩放到 240x240 (16:9 画面自动取中间)
+  4) -> 大核 CVI_VPSS_GetChnFrame 抓帧 (NV21)
+  5) -> 大核做 NV21 -> RGB565(大端) 转换 (硬件不做这一步)
+  6) -> 写进共享内存 LCD_SHM_PHYS 的 fb 区
+  7) -> mailbox 发 LCD_CMD_CAM
+  8) -> 小核 LVGL 用 image 控件显示到 ST7789
+
+1.2 为什么必须"大核取画面 + 小核显示"
+--------------------------------------------------------------------------------
+  1) 屏幕**完全由小核(C906L)独占**: lvgl_task.c 是屏的唯一所有者, 直接用 SPI2
+     寄存器 + sysDMA 送显, 不经过 Linux 的 spidev, 也不经过 Linux GPIO 子系统。
+  2) 大核(Linux)根本碰不到那根 SPI2 数据通路(它只做 CPU 监控并走 mailbox 送数)。
+  3) 所以大核只能把像素放进共享内存, 由小核搬到屏上 —— 这也是本工程既有的
+     "lcd_sender 填色/彩条" 那套机制的延伸。
+
+1.3 屏幕方向与"取中间"的换算 (重要)
+--------------------------------------------------------------------------------
+  1) 屏是 **240x320 竖屏**; 摄像头出图是 320x240 横屏。
+  2) 用户要求"截取中间的 320x240 显示到屏幕上"。已定的做法:
+       a) 摄像头侧取中间的 **240x240** 正方形 (VPSS 硬件缩放自动居中);
+       b) 屏 320 高、图 240 高 => 上下各留 40 像素黑边, 图竖直居中;
+       c) 这样不变形、不旋转。如果以后要"铺满 240x320", 需要旋转 90 度:
+          小核 LVGL 做 image 旋转最省事; 大核用 napajs/软件旋转会耗 CPU。
+  3) 相关宏: LCD_W=240 / LCD_H=320 (lcd_shm.h); CAM_W=CAM_H=240 (工具里)。
+
+================================================================================
+  二、已经做完的部分 (可直接复用)
+================================================================================
+
+2.1 大核工具 tools/cam_lcd.c (源码已在仓库)
+--------------------------------------------------------------------------------
+  1) 功能: 初始化 VI+VPSS -> 抓 240x240 帧 -> NV21 转 RGB565 -> 塞共享内存
+     -> 发 LCD_CMD_CAM。
+  2) 支持 `--dump out.ppm` 只抓一帧存图(验证抓帧通路, 不碰屏);
+     `--frames N` 送 N 帧后退出。
+  3) 关键实现点(都验证过):
+       a) pixel format 是 **NV21**(VI_PIXEL_FORMAT = PIXEL_FORMAT_NV21),
+          UV 平面上 **V 在前 U 在后**; 按 NV12 写会得到错误颜色。
+       b) RGB565 必须**大端**写(高字节在前), 与 ST7789 及小核 lv_conf.h 的
+          LV_COLOR_16_SWAP=1 约定一致。
+       c) 抓帧有行 stride(f->u32Stride[]), 不能假设 width*bytes 连续。
+  4) 交叉编译命令(用板上的库链接时):
+       GCC=/home/chen/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc
+       CFLAGS="-march=armv8-a -O2 -DNDEBUG -DCV181X -D__CV181X__ -std=gnu11 -fsigned-char"
+       CFLAGS="$CFLAGS -I<include/system> -I<include/tdl> -I."
+       LDFLAGS="-L<libs> -lini -lsns_full -lsample -lisp -lvdec -lvenc -lawb -lae -laf \
+                -lcvi_bin -lcvi_bin_isp -lmisc -lisp_algo -lsys -lvi -lvo -lvpss -lrgn -lgdc \
+                -lpthread -lrt -latomic -lm"
+       $GCC $CFLAGS -o cam_lcd cam_lcd.c $LDFLAGS
+     ★ 少了 -lrt 会报 timer_create/timer_settime 未定义; 少了 -lm 会报 sincos/powf。
+
+2.2 新的 mailbox 命令 LCD_CMD_CAM (已定义)
+--------------------------------------------------------------------------------
+  1) 在 lcd_shm.h 里新增:
+       #define LCD_CMD_CAM  0x48
+     语义: 大核已把一张 RGB565(大端) 图写进 fb 区, 矩形在 ctrl 的 x0/y0/x1/y1;
+           小核用 LVGL 把它显示出来, 并**停掉跑分 demo**(进入"画面模式")。
+  2) 两份副本已同步(内容逐字节一致):
+       src/big_core/lcd_shm.h
+       src/sdk_overlay/freertos/cvitek/task/comm/src/riscv64/lcd_shm.h
+
+2.3 抓帧 API 已确认可用
+--------------------------------------------------------------------------------
+  1) CVI_VPSS_GetChnFrame(grp, chn, &frame, timeout_ms) / ReleaseChnFrame 都在
+     板上的 libvpss.so 里(符号齐全, 含 SetChnAttr / EnableChn / SetChnCrop)。
+  2) VPSS 通道属性设 240x240 即可让硬件缩放, 比例不同时默认取中间。
+  3) 板上**没有** VGS 库(libvgs.so 不存在), 所以旋转/缩放只能靠 VPSS 或 CPU。
+
+================================================================================
+  三、★ 卡点: 编译用的头文件与板上运行库 ABI 不匹配 (必须解决)
+================================================================================
+
+3.1 现象
+--------------------------------------------------------------------------------
+  1) cam_lcd 能跑、能打印, 走到 VI 初始化处:
+       [1] sizeof(SAMPLE_INI_CFG_S)=232 sizeof(SAMPLE_VI_CONFIG_S)=788
+       [2] ParseIni OK, enSnsType[0]=26 devNum=1
+       [3] GetSensorInfo OK
+       [4] IniToViCfg ret=0 workingViNum=0      <- 应该是 1 却是 0
+       [5] GetSizeBySensor ret=0
+       Segmentation fault                        <- 随后访问空数组就崩
+  2) workingViNum=0 说明库函数没按我给的布局写这两个字段。
+
+3.2 定位手段(tools/abi_probe.c, 已写)
+--------------------------------------------------------------------------------
+  1) 做法: 把 SAMPLE_VI_CONFIG_S 整块填 0xAA, 调库里现成的
+     SAMPLE_COMM_VI_IniToViCfg(), 再看哪些字节被写了、写成了什么。
+     这样能**反推库真正使用的结构布局**, 不靠猜。
+  2) 实测输出(关键):
+       sizeof(SAMPLE_VI_INFO_S) = 152      <- 头文件认为的
+       库写第一组字段在 off 0..~33、第二组从 off 132 开始
+       => **库认为 SAMPLE_VI_INFO_S = 132 字节, 头文件认为是 152 字节, 差 20**
+     20 字节 / 每个实例 * VI_MAX_DEV_NUM(5) 累积, 于是 s32WorkingViNum 完全错位。
+  3) 结论: 只要头与库不配套, 这类结构体传参的函数全都不可信。
+
+3.3 三套库/头互不相同(实测 md5)
+--------------------------------------------------------------------------------
+  1) 板上跑的库(/mnt/system/lib, /mnt/system/usr/lib, 2025-05-30):
+       libsample.so      b868c6f9aaa5fa36975a1a6275e8d98a
+       libsys.so         b1a259a7d75e3abc7053d485c0d37819
+       libvi.so          df60b516a8ac9c24986fc1ec00c2251f
+       libvpss.so        28f81d581656bc6f25aca766d935e905
+       libsns_full.so    293386817c89ae7b7a85ce383fd367d3   (sensor 表 176 项)
+  2) /home/chen/duo-tdl-examples-master(2024-12-25 的包):
+       头 sample_comm.h 1357d64413aa7856d41551bb4eff4403
+       库 libsample.so  b463efffcc048aaf032bed225c86fca4   (与工作区那份相同)
+  3) 工作区 <仓库>/duo-tdl-examples(2025-09 的包):
+       头 sample_comm.h a59f8ec55a81f4a78f66d7ff9e495ce3
+       库 md5 与上面第 2) 条相同
+  4) 三者的 sensor 表规模也不同: 板 176 项 / TDL 342 项 —— 枚举下标整体漂移,
+     连 GCORE_GC2083 的下标都对不上(头上算出来 19, 板上库给的是 26)。
+  5) ★ 所以"换库"或"换头"单独做都没用, 必须**头与库来自同一个包**。
+
+3.4 ★★ 已找到出路 A 的解 (2026-09-30 04:2x 实测确认)
+--------------------------------------------------------------------------------
+  1) 做法: 用工作区 <仓库>/duo-tdl-examples 里那套**自洽的头+库**编译,
+     并把它 libs/system/glibc_arm64 下的 21 个 .so 放到板上**独立目录**
+     /root/tdllibs/, 运行时优先:
+       LD_LIBRARY_PATH=/root/tdllibs:/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd
+     ★ 不要去动 /mnt/system/usr/lib 下板上原有的库, 板上其它程序照旧。
+  2) 效果(实测, 同一个 abi_probe 程序):
+       改之前: s32WorkingViNum = 0        (头与库错位 20 字节)
+       改之后: s32WorkingViNum = 1        ← 完全正确
+     并且 cam_lcd 的初始化从此一路走通:
+       [4] IniToViCfg ret=0 workingViNum=1 snsType=21 ViChn=0
+       VI 已启动 (pipe=0 chn=0)
+       VPSS 已启动 (grp=0 chn=0, 240x240)
+  3) 打包/部署命令(可直接复制执行):
+       # [WSL] 把包拷到无空格路径再编(路径里带空格会把 -I 拆坏)
+       P=/home/chen/tdlpkg
+       rm -rf $P && mkdir -p $P
+       cp -a "<仓库>/duo-tdl-examples/include" $P/
+       cp -a "<仓库>/duo-tdl-examples/libs"    $P/
+       # [WSL] 编
+       GCC=/home/chen/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc
+       CFLAGS="-march=armv8-a -O2 -DNDEBUG -DCV181X -D__CV181X__ -std=gnu11 -fsigned-char"
+       CFLAGS="$CFLAGS -I$P/include/system -I$P/include/tdl -I."
+       LDFLAGS="-L$P/libs/system/glibc_arm64 -lini -lsns_full -lsample -lisp -lvdec -lvenc \
+                -lawb -lae -laf -lcvi_bin -lcvi_bin_isp -lmisc -lisp_algo -lsys -lvi -lvo \
+                -lvpss -lrgn -lgdc -lpthread -lrt -latomic -lm"
+       $GCC $CFLAGS -o cam_lcd cam_lcd.c $LDFLAGS
+       # [WSL->板] 把 21 个 .so 打包传上去
+       tar czf /tmp/tdllibs.tgz -C $P/libs/system/glibc_arm64 .
+       scp /tmp/tdllibs.tgz root@192.168.42.1:/root/
+       # [板子] 解开
+       mkdir -p /root/tdllibs && tar xzf /root/tdllibs.tgz -C /root/tdllibs
+  4) ★ 但 ABI 问题只是**部分**解决: 少数结构体仍然错位 —— 实测
+     VPSS_MODE_S 也有差异(用 DUAL 模式直接段错误, 用 SINGLE 能过)。
+     详见 3.5。
+
+3.6 ★ 最终卡点(截至收尾): 与 sample_vi_fd 完全同构却仍 ILLEGAL_PARAM
+--------------------------------------------------------------------------------
+  1) 新写了 tools/cam2lcd.c —— **完全照抄**板上能工作的 sample_vi_fd 的初始化:
+       同一个 SAMPLE_TDL_Get_VI_Config / SAMPLE_COMM_VI_GetSizeBySensor
+       同样 3 个 VB 池且尺寸与所绑通道一致(pool0->Chn0 1280x720,
+                                       pool1->Chn1 240x240, pool2 不绑)
+       同样 2 个 VPSS 通道、都先设 1280x720
+       VPSS_GRP_DEFAULT_HELPER2(..., dev=1)、VPSS_MODE_DUAL、aenInput[0]=ISP
+       调 SAMPLE_TDL_Init_WM()
+     最后在 CVI_VPSS_CreateGrp 处报:
+       [SAMPLE_COMM_VPSS_Init]-28: CVI_VPSS_CreateGrp(grp:0) failed with 0xc0068003!
+       (0xc0068003 -> [12:0]=3 = EN_ERR_ILLEGAL_PARAM)
+  2) 已排除的原因:
+       a) VB 池尺寸/数量 —— 与样例一致, 不是;
+       b) 通道尺寸 240x240 不被接受 —— 改成两只通道都 1280x720 仍然报错;
+       c) VPSS_GRP_ATTR_S 结构差异 —— 两份头(cvi_comm_vpss.h)逐行相同;
+       d) 自己先设 VI/VPSS 模式导致状态冲突 —— 改成完全不设、交给中间件, 仍报错;
+       e) 手动设模式的返回值 —— 实测 CVI_SYS_SetVIVPSSMode / SetVPSSModeEx 都返回 0。
+  3) 交叉验证过的组合(4 种):
+       头(bundle 2025-09) + 库(bundle)      -> SAMPLE_* 能过, CreateGrp ILLEGAL_PARAM
+       头(bundle)         + 库(板上)        -> 连 SAMPLE_TDL_Get_VI_Config 都失败
+       头(2024-12)        + 库(板上)        -> 同样取不到 VI 配置
+       头(2024-12)        + 库(bundle)      -> 同上
+     => **只有"bundle 头 + bundle 库"这一种能过 SAMPLE_* 阶段**, 但它的
+        CVI_VPSS_CreateGrp 与板上内核模块(cv181x_vpss.ko, 2025-05-30)对不上。
+  4) 下一步建议(按性价比排序):
+       a) ★★ **strace 对比法**(最直接, 强烈建议先做):
+            板上可能没有 strace; 若有, 分别对 `sample_vi_fd` 和 `cam2lcd` 抓
+            ioctl 序列, 直接 diff 出 CVI_VPSS_CreateGrp 那一次的参数差异:
+              strace -f -e trace=ioctl -o /tmp/a.txt /mnt/system/usr/bin/ai/sample_vi_fd <model>
+              strace -f -e trace=ioctl -o /tmp/b.txt /root/cam2lcd --dump /tmp/x.ppm
+              diff <(grep -i vpss /tmp/a.txt) <(grep -i vpss /tmp/b.txt)
+            没有 strace 就交叉编译一个静态版传上去。
+       b) ★ 直接改 sample_vi_fd 源码: 把 TDL 推理那段换成"抓帧+转RGB565+写共享内存"。
+          它的初始化是**板上实测可用**的, 从它出发最稳。
+          (工作区的 tdl_sdk 源码可编: build_tdl_sdk.sh)
+       c) 用板上那对"能过 SAMPLE_* 且库与内核匹配"的组合难以两全, 所以
+          "在可用的程序里加功能"比"自己重建初始化"更划算。
+  5) 已经没有悬念的部分(可以直接复用):
+       - NV21->RGB565 的转换代码(含中心裁剪+最近邻缩放)已验证逻辑正确;
+       - 共享内存写入 + LCD_CMD_CAM 协议已定义好;
+       - 上面 3.4 节的编译/部署流水线可直接复用。
+--------------------------------------------------------------------------------
+3.6b 之前的分析(保留, 属"抓不到帧"的另一条路径)
+--------------------------------------------------------------------------------
+  1) 现象: 初始化全过(VI 启动、VPSS 组建成、240x240 通道使能、VB 池已绑),
+     但 CVI_VPSS_GetChnFrame 一直返回:
+       0xc006800e  ->  [23:16]=0x06 VPSS, [15:13]=4 ERROR, [12:0]=0x0E = EN_ERR_BUF_EMPTY
+     即"通道没有输出缓冲"。
+  2) 已经排除的:
+       a) VB 池大小算错 —— 不是。算了 COMMON_GetPicBufferSize(240,240,NV21) = 92160,
+          与 240*240*1.5 一致;
+       b) 没把池绑到通道 —— 绑了(CVI_VPSS_AttachVbPool), 仍然 BUF_EMPTY;
+       c) 摄像头没出图 —— 不是, 同一次启动里 ISP/AE 都在正常工作(R/B/CT 有值)。
+  3) 试过但失败的:
+       a) VPSS_MODE_DUAL + u8VpssDev=1 -> CreateGrp 报 0xc0068003(ILLEGAL_PARAM)
+       b) VPSS_MODE_DUAL + u8VpssDev=0 -> **段错误**(VPSS_MODE_S 结构体也错位)
+       c) VPSS_MODE_SINGLE + u8VpssDev=0 -> CreateGrp 成功但 GetChnFrame = BUF_EMPTY
+  4) 下一步建议(按可能性排序):
+       a) ★ 照 TDL sample_vi_fd 的**完整**配置抄: 它用 3 个 VB 池, 前两个通过
+          SAMPLE_TDL_VB_CONFIG_S 的 u32VpssGrpBinding/u32VpssChnBinding 字段
+          "声明式"绑定, 而不是用 CVI_VPSS_AttachVbPool。先照抄它的池配置,
+          再用 CVI_VPSS_GetChnFrame(0, 0) 抓 —— 这条路径是**实测可用**的
+          (sample_vi_fd 的 run_venc 线程就是这么抓帧的);
+       b) 直接把 chn 属性设成 1280x720 先确认能抓到帧(排除"240x240 尺寸不被
+          缩放器接受"), 能抓到再改小;
+       c) 检查 VI 通道属性: SAMPLE_COMM_VI_GetChnAttrBySns 给的 enPixFormat 是
+          VI_PIXEL_FORMAT(NV21), 但 online 模式下 VPSS 吃的是 ISP 的 RAW/YUV,
+          可能需要把 VI chn 的 bYuvBypassPath 打开或改用 OFFLINE 模式;
+       d) 用 vi_vo_utils.c 里那套(它会配 VPSS_INPUT_MEM + 自己灌帧)对比,
+          确认 online 模式下的正确接法。
+  5) ★ 最省事的一条: 干脆**不自己初始化**, 而是借用已经能工作的那条路径 ——
+     把 TDL 的 middleware_utils.c / sample_utils.c 一起编进自己的程序,
+     调 SAMPLE_TDL_Init_WM_NO_RTSP()(这套配置是实测能出帧的), 然后从它建好的
+     VPSS 组上抓帧。代价是要一起编几个 TDL 源文件, 但省掉所有 VI/VPSS 摸索。
+     ★ 注: 这一条已试过(见 3.6) —— SAMPLE_TDL_Init_WM 在自建程序里依然在
+       CreateGrp 报 ILLEGAL_PARAM。真正该走的是 3.6 第 4) 条的 a/b 两条。
+
+3.8 ★ 方案3(RTSP 拉流)的进展与新卡点 —— 2026-09-30 收尾
+--------------------------------------------------------------------------------
+  3.8.1 已经打通的部分(可复用)
+   1) 自己写了一个**极简 RTSP 客户端** tools/rtsp2lcd.c, 实测与板上
+      sample_vi_fd 的 RTSP 服务端(live555 派生, libcvi_rtsp.so)对接成功:
+        DESCRIBE -> 200 OK, SDP 拿到 a=control:*
+        SETUP    -> 200 OK, Session 拿到
+        PLAY     -> 服务端**不返回头部**, 直接在同一 TCP 连接上推 '$' 交织帧
+      实测收到的第一包: 24 01 00 30 ... (0x24='$', chn=1, len=0x30)
+      ★ 坑: PLAY 之后响应头和 RTP 数据会混在一起收到, 不能盲目读到 \r\n\r\n;
+        必须在遇到 '$' 时立刻停手, 并把那段数据搬进帧缓冲, 否则第一包 RTP 会丢。
+      ★ 坑: 读响应的循环里不能用 strstr 找 \r\n\r\n, 因为后面混着二进制数据,
+        strstr 会被中间的 0 字节截断; 要用 memchr 按长度找。
+   2) 交叉编译用的 ffmpeg 头文件: 板上的 libavcodec/avformat/avutil 是
+      soname 58/58/56, 对应 **ffmpeg n4.4**; 头文件已从
+      raw.githubusercontent.com/FFmpeg/FFmpeg/n4.4 取回放在 /home/chen/ffinc
+      (WSL 走代理 http://127.0.0.1:10808 可通)。
+      ★ avconfig.h 是 configure 生成的, 源码树里没有, 要手工写(见 3.8.4)。
+   3) 板上 ffmpeg 库已从板子拉回 /home/chen/fflibs(含 soname 软链)。
+
+  3.8.2 ★ 新卡点: 板上 ffmpeg **没有 H.264 解码器**
+   实测 tools/decprobe.c 列出的板上 libavcodec 解码器**只有 3 个**:
+       mjpeg  (Motion JPEG)
+       aac
+       pcm_s16le
+     -> AV_CODEC_ID_H264 不存在, avcodec_find_decoder(AV_CODEC_ID_H264) 返回 NULL。
+   所以"拉 H.264 流用软件解码"这条路在板上走不通。
+
+  3.8.3 已经查清的备选解码途径
+   1) **硬件解码 CVI_VDEC**: 板上 /mnt/system/usr/lib/libvdec.so 导出了 17 个
+      CVI_VDEC_* 符号, 且有 /mnt/system/usr/bin/sample_vdec 示例
+      (支持 -c 264/265/jpg/mjp)。接口: CVI_VDEC_CreateChn / SendStream / GetFrame。
+      ★ 但实测 lsmod 里**没有 vdec 内核模块**(默认没加载), 用之前要先确认
+        模块存在并能 insmod。
+      ★ VDEC 也要先初始化 SYS/VB, 会碰到和 VI 一样的 ABI 风险。
+   2) **让服务端改出 MJPEG**: 板上 ffmpeg 有 mjpeg 解码器, 而 CVITEK 源码里
+      有 cvi_rtsp/example/rtsp_server_mjpeg.cpp(enPayLoad = PT_MJPEG), 说明
+      CVITEK 支持 MJPEG 编码。
+      ★ 但板上现成的 sample_vi_fd **没有命令行选项**(-h 也会直接跑完整初始化),
+        编码格式是编译进去的, 改不了。
+      ★ 板上 /mnt/system/usr/bin/ai/ 下有 50+ 个 AI 示例二进制, 都是同一套
+        TDL 流程, 同样没有编码格式选项。
+   3) 自己写一个 MJPEG 服务端: 用板上的 libcvi_rtsp.so(导出 CVI_RTSP_Create /
+      CreateSession / Start / WriteFrame 等) + libvenc.so 走 MJPEG。
+      ★ 这条**不需要 VI/VPSS**也能试: 可以先造测试图编码, 验证 VENC+RTSP 通,
+        再考虑接摄像头。风险低, 是当前最推荐的下一步。
+   4) 自己写 baseline JPEG 软解码器: MJPEG 每帧是独立 JPEG, 写个最小
+      baseline 解码(哈夫曼+IDCT+YCbCr->RGB565)约 400 行, 320x240 在 A53 上
+      单帧几毫秒, 可接受。配合 3) 或 2) 用。
+
+  3.8.4 ffmpeg n4.4 头文件手工补的 avconfig.h(照抄即可)
+      /* aarch64 Linux glibc, 对应 ffmpeg n4.4 configure 输出 */
+      #ifndef AVUTIL_AVCONFIG_H
+      #define AVUTIL_AVCONFIG_H
+      #define AV_HAVE_BIGENDIAN 0
+      #define AV_HAVE_FAST_UNALIGNED 1
+      #endif
+      另外 av_base64_decode 在 libavutil/base64.h(容易漏)。
+
+  3.8.5 编译/测试命令(已验证可跑)
+      # [WSL] 编
+      GCC=/home/chen/duo-sdk-v2/host-tools/gcc/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc
+      cd /home/chen/rtspbuild
+      $GCC -march=armv8-a -O2 -DNDEBUG -std=gnu11 -fsigned-char \
+           -I/home/chen/ffinc -I. -o rtsp2lcd rtsp2lcd.c \
+           -L/home/chen/fflibs -lavcodec -lavutil -lpthread -lm
+      # [板子] 先起流源, 再拉
+      export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd
+      nohup /mnt/system/usr/bin/ai/sample_vi_fd /mnt/cvimodel/scrfd_768_432_int8_1x.cvimodel > /tmp/vi.log 2>&1 &
+      sleep 12
+      RTSP_DEBUG=1 ./rtsp2lcd --dump /tmp/rt.ppm
+      ★ RTSP_DEBUG=1 会逐次打印收到的字节(十六进制), 排查 RTSP 协议问题很有用。
+
+3.10 ★★ 重要发现: 板上**有硬件 H.264 解码器**, 是当前最有希望的出路
+--------------------------------------------------------------------------------
+  1) 实测确认(2026-09-30):
+       a) /mnt/system/usr/bin/sample_vdec  存在(1289920 字节), 帮助里明确写着
+            --codec  264 = h.264, 265 = h.265, jpg = jpeg, mjp = motion jpeg
+          用法: sample_vdec --numChn=1 --chn=0 -c 264 -i in.264 -o out.yuv
+       b) /mnt/system/usr/lib/libvdec.so   存在, 导出 17 个 CVI_VDEC_* 符号
+       c) **不需要额外加载内核模块** —— 试过 insmod 找不到 vdec.ko 也没关系,
+          sample_vdec 本身能起来(只有 'Cannot open /dev/cvi-vo' 这种无害告警)。
+          之前 lsmod 里看不到 vdec 是因为它不叫这个名字。
+     => 结论: H.264 硬件解码是**板上现成可用**的, 只是要走 CVI_VDEC 接口,
+        而不是软件解码。
+  2) 与已有成果的衔接(很关键):
+       tools/rtsp2lcd.c 里那个**极简 RTSP 客户端已经能稳定拿到 H.264 NAL**
+       (DESCRIBE/SETUP/PLAY 全通, 交织帧解析正确), 并且新增了
+         --raw out.264
+       模式: 把 Annex-B 码流(带 SPS/PPS 前缀)存成文件。
+       => 只要把"写文件"换成"喂给 CVI_VDEC", 链路就完整了:
+            RTSP 客户端(已通) -> CVI_VDEC_SendStream(硬件解码)
+            -> CVI_VDEC_GetFrame -> YUV 转 RGB565 -> 共享内存
+            -> mailbox LCD_CMD_CAM -> 小核 LVGL -> 屏
+  3) 下一步的推荐做法(按顺序):
+       a) **先用文件验证硬件解码链路**: 用 rtsp2lcd --raw 录一段 .264,
+          再跑 sample_vdec 解成 out.yuv, 确认能出图(看文件大小/YUV 内容)。
+          这一步过了, 就证明板上解码没问题, 后面纯粹是接口对接。
+       b) 再把 CVI_VDEC 的调用写进 rtsp2lcd.c(不再落文件, 直接内存传递)。
+          CVI_VDEC 需要的头: include/system/cvi_vdec.h(工作区包里已有)。
+       c) ★ 注意 VDEC 也要先 CVI_SYS_Init + 配 VB 池, 会碰到和 VI 一样的
+          "头与库是否匹配"问题 —— 但这个组合(工作区 bundle 头 + bundle 库)
+          之前已实测能让 SAMPLE_*/VI 初始化走通, 所以值得一试。
+  4) 已排除/不推荐的路径(省得重复走):
+       a) 软件解 H.264 —— 板上 libavcodec **只有 3 个解码器**(mjpeg/aac/pcm_s16le),
+          没有 H.264, 走不通(有 tools/decprobe.c 可随时复验)。
+       b) 让 sample_vi_fd 改出 MJPEG —— 它**没有命令行选项**(连 -h 都会跑完整
+          初始化), 编码格式编译进去了; ai/ 下 50+ 个示例也都一样。
+       c) 自己用 libcvi_rtsp.so 起 MJPEG 服务端 —— 可行但工作量大, 且
+          依赖 VENC+RTSP 都跟内核对得上; 既然硬件解码可用, 优先级放到最后。
+       d) 自己写 JPEG 软解码 —— 只在 c) 走通后才需要, 现在不必。
+
+  3.10.1 顺手记录的两个坑
+    a) "Text file busy": 板上还有 rtsp2lcd 在跑时 scp 覆盖会失败。
+       重传前先 `killall rtsp2lcd` 或重启, 否则你以为传了新版本、其实还是旧的,
+       排查会非常迷惑(这次就被坑了一次)。
+    b) --raw 模式要放在"找解码器"**之前**: 否则板上没有 H.264 解码器时会
+       直接退出, 根本走不到写文件那一步。
+
+3.12 ★ 精确卡点记录: rtsp_next_nal 的包重组逻辑有 bug(未修好)
+--------------------------------------------------------------------------------
+  实测状态(诊断日志 /tmp/rtsp2lcd.log, 已加独立日志便于卡死时也能看):
+      启动: url=rtsp://127.0.1.1/h264
+      TCP 已连接 127.0.1.1:554
+      RTSP 建链成功, g_blen=228 SPS=0 PPS=0
+      !! iter=2000000 bpos=0 blen=632 byte@bpos=24 NAL=0
+         | 前16字节: 24 00 05 B0 80 60 78 28 6D B7 06 6B 28 4C 6A 2B
+      (之后 iter=4M/6M/8M... 状态**完全不变** -> 死循环, 一个 NAL 都没解析出来)
+
+  1) 已确认的事实:
+       a) RTSP 协议本身是通的: DESCRIBE/SETUP/PLAY 全部成功。
+       b) 确实收到了交织 RTP 数据: 24='$', chn=0x00, plen=0x05B0=1456;
+         RTP 头 80 60 78 28 -> V=2, 无填充/扩展, CC=0, M=0, PT=96(动态)。
+       c) ★ 关键: `bpos=0 blen=632` 但**交织头声明的长度是 1456**
+         (0x05B0)。即缓冲区里只有 632 字节, 而这一包需要 4+1456=1460 字节。
+         `g_bpos + 4 + plen > g_blen` -> 632 < 1460 -> 走"包跨缓冲区"分支。
+       d) 该分支本应: memmove 残留到开头 -> recv 补齐 -> continue。
+         但日志显示状态**一个字节都没变**(bpos 仍 0, blen 仍 632),
+         说明要么没走到 recv, 要么 recv 立刻返回 0 且没被记录。
+  2) 怀疑点(留给下一轮, 按可能性排序):
+       a) `iter` 计数与实际状态不同步: 日志每 200 万次才打一次, 且 dbg 只在
+          首次打开文件时 "w" 截断、之后追加 —— **看日志时要确认看到的是最新
+          那几行, 别被旧行误导**(这一轮就被误导过好几次)。
+       b) 跨包分支里的 memmove 参数: `left = g_blen - g_bpos` 在 bpos=0 时
+          等于 blen, 分支内再判 `g_bpos > 0` 才 memmove, 于是什么都没做,
+          但 `g_blen = left` 也没变 -> 状态确实应该不变。所以问题可能是
+          **这个分支被反复进入却没有去 recv**。建议直接重写这段:
+          把"读满一包"做成一个独立函数(循环 recv 直到攒够 4+plen 字节),
+          逻辑会清晰很多, 不要再在一个大 for(;;) 里混着做。
+       c) SO_RCVTIMEO 已设 5 秒, 但从未看到 "recv 返回 ..." 的日志,
+          说明**根本没执行到 recv**。优先验证这一点。
+  3) 建议的下一步: 先写一个**最小复现**: 只做 DESCRIBE/SETUP/PLAY, 然后把
+     收到的原始字节**全部 dump 到文件**(不解析), 用 PC 端脚本离线分析
+     RTP 分帧, 确认分帧逻辑对了再回到板上跑。这样比在板上反复试快得多。
+     (板子上编译-传输-重启一轮要 3~4 分钟, PC 上分析是秒级的。)
+
+3.13 ★ 部署/调试教训(都会浪费大量时间, 务必先看)
+--------------------------------------------------------------------------------
+  1) **Text file busy**: 板上还有同名程序在跑时, scp 覆盖会失败, 而你看到
+     的仍是**旧二进制**, 却以为测的是新版本 —— 这一轮被坑了 3 次。
+     可靠做法(已脚本化):
+       scp 到 rtsp2lcd.new -> 比对 md5 -> mv -f 改名 -> chmod +x
+     重传前先 `killall <名字>`, 或直接重启。
+  2) **stdout 重定向到文件时是块缓冲**: 程序卡死时日志里什么都没有, 会误判
+     成"卡在启动阶段"。要诊断就用**独立日志文件 + 每次 fflush**
+     (代码里已加 dbg(), 写 /tmp/rtsp2lcd.log)。
+  3) 板上 Linux 没有 RTC, 时间戳是 1970 开头, 不要用时间戳判断新旧。
+  4) 反复"重启板子 -> 跑一轮"一轮约 3~4 分钟。**能在 PC 上离线验证的逻辑
+     先离线验证**, 不要拿到板上试错。
+
+3.11 屏幕 320x240 横屏(需求已确认, 代码还没改)
+--------------------------------------------------------------------------------
+  1) 需求: 屏幕按 320x240 横屏显示(与摄像头 320x240 一致 -> 1:1 铺满, 不裁不转)。
+  2) 现状: 小核固件里是 **LCD_W=240 / LCD_H=320 竖屏**(ST7789 原生方向)。
+  3) 要改的地方(下一轮做):
+       a) lcd_st7789.c: ST7789 初始化表里的 MADCTL(0x36)寄存器 ——
+          竖屏常用 0x00/0x60/0xC0, 横屏要在 **MV 位(0x20)** 上翻转(0x60<->0x40,
+          0xC0<->0xA0), 同时按需调 BGR 位(0x08)和 X/Y 偏移;
+       b) 背光/窗口设定: 320x240 竖屏布局下 CASET/RASET 的范围要跟着变成
+          0..319 / 0..239, 并确认开窗偏移(ST7789 240x320 面板的列/行偏移
+          在旋转后要重新对);
+       c) lcd_shm.h 里的 LCD_W/LCD_H 改成 320/240;
+       d) 小核 LVGL: lv_port_disp.c 的显示缓冲改成 320 宽(建议两个
+          320x40 的条, 共 25600 字节, 在 LVGL 池里很轻松);
+       e) 共享内存 fb 区 153600 字节正好等于 320x240x2, 不用改(见 lcd_shm.h)。
+  4) ★ 验收方法: 先用纯色/彩条填满 320x240 确认方向和偏移对了, 再接摄像头画面。
+     旋转最容易错的就是偏移, 直接上摄像头画面会分不清是方向错还是数据错。
+--------------------------------------------------------------------------------
+  出路 A(推荐): 把工作区 duo-tdl-examples 那套"自洽的头+库"整体用起来
+    1) 那份包的头与库是配套的(头 2025-09, 库 md5 与 2024-12 包相同 -> 该套稳定)。
+    2) 操作:
+         a) 用它 include/ 做 -I, 用它 libs/system/glibc_arm64/*.so 做链接;
+         b) 把这批 .so 传到板上**独立目录**(不要动 /mnt/system/usr/lib),
+            例如 /root/tdllibs/;
+         c) 运行时用 LD_LIBRARY_PATH=/root/tdllibs:/mnt/system/lib:/mnt/system/usr/lib
+            只让本工具用新库, 板上原有程序不受影响;
+         d) 重新编 cam_lcd 并跑 --dump 验证能出 PPM。
+    3) 风险: 新库与板上内核模块(cv181x_vi/vpss 等 2025-05 的 ko)的 ioctl 接口
+       若有变化, 可能在运行时报错 —— 用 --dump 先验证, 不行再退回出路 B。
+    4) 体积: glibc_arm64 那套 .so 合计约 2.3MB, 传板很小。
+
+3.4b 另外两条出路(备选)
+--------------------------------------------------------------------------------
+  出路 B(最稳但费事): 让头与板上的库配套
+    1) 板上那套库来自镜像构建所用的 SDK 源码树(工作区里没有完整的那一份)。
+    2) 需要拿到与 2025-05-30 那套库对应的 include/(CVITEK 交付包), 或
+       重新构建该 SDK 的用户态库。
+    3) 拿到后 -I 指向它即可, 不用往板上加任何库。
+
+  出路 C(绕开 MMF 高层): 不用 SAMPLE_COMM_* 配置结构
+    1) 直接调低层 CVI_VI_*/CVI_VPSS_* API 自己拼 VI/VPSS, 绕开
+       SAMPLE_VI_CONFIG_S/SAMPLE_INI_CFG_S 这两个"最容易错位"的结构。
+    2) 但仍需要 sensor 类型枚举值(= 从 libsns_full.so 里查到的编号)与分辨率,
+       可用 abi_probe.c 那种"扫一遍候选值、看哪个能返回 1920x1080"的办法定出来。
+    3) 工作量最大, 但一旦通了就不依赖头版本。
+
+================================================================================
+  四、还没做的部分 (下一步的工作清单)
+================================================================================
+
+4.1 小核固件侧(完全没动)
+--------------------------------------------------------------------------------
+  1) 取消"没有画面就红屏": 现在跑的是 lv_demo_benchmark(lvgl_task.c:242),
+     屏上一直是跑分画面; 另外 lcd_st7789.c 的 prvLcdTask 里还有一套
+     "大核没接管就循环刷红/绿/蓝" 的心跳(colors[] = {LCD_RED, LCD_GREEN, LCD_BLUE}),
+     两条都要处理掉, 才算"取消默认红屏"。
+  2) 用 LVGL 显示画面: 建议做法
+       a) 建一个覆盖 240x240 的 lv_img(或 lv_obj + 自定义 draw),
+          src 指向共享内存里的那块 RGB565 图;
+       b) 进入"画面模式"后停掉 lv_demo_benchmark(或干脆不创建),
+          lv_timer_handler 继续跑以维持 LVGL 与 OSD;
+       c) 没有画面时显示**黑底**(不是红色), 可选叠一行 "no signal"。
+  3) lv_conf.h 现状(有利于实现): LV_MEM_SIZE=320KB、LV_COLOR_DEPTH=16、
+     LV_COLOR_16_SWAP=1、LV_USE_IMG=1、LV_USE_CANVAS=1。
+     一张 240x240 RGB565 = 115KB, 放得进 320KB 池; 但更省的做法是让 LVGL 直接
+     引用共享内存那块(不复制), 需要自己实现 image decoder 或用 canvas。
+  4) comm_main.c 里要把 LCD_CMD_CAM 加进 cmdqu 分发(现在只处理
+     INIT/BL/PING/MON/RTOS_RELOAD, 见 comm_main.c:219 附近), 并且**不要回 ACK**
+     (每帧一帧就回执会把 8 个 mailbox 槽位打满, 那是 2026.9.28 记录里的老坑)。
+  5) 小核构建/热更流程见 2026.9.28-小核-帧率修复与热更.txt 第五章;
+     ★ 改完记得把 LVGL_PROBE_BUILD_ID 加 1(lvgl_task.c)。
+
+4.2 大核侧收尾
+--------------------------------------------------------------------------------
+  1) 抓帧循环的清理: 收到 SIGINT/SIGTERM 时**必须** CVI_VPSS_DestroyGrp /
+     StopGrp / CVI_SYS_Exit, 否则会留下"未销毁的 VPSS group"(见第五章的坑)。
+  2) 性能: 每帧 240x240 RGB565 = 115200 字节, 30fps 需要 ~3.5MB/s,
+     共享内存 + memcpy 完全够; 瓶颈更可能在 NV21->RGB565 的 CPU 转换
+     (57600 像素/帧, A53 单核应该轻松)。
+  3) 加一个 `--once` 或 watchdog: 摄像头断流时不要卡在 GetChnFrame 上。
+
+================================================================================
+  五、★ 必看: 两个会让"后面所有测试都失败"的坑
+================================================================================
+
+5.1 VPSS group 会残留, 只能重启清
+--------------------------------------------------------------------------------
+  1) 现象(实测复现): 程序被 kill -9 或段错误退出后, 再跑任何用 VI/VPSS 的程序
+     都报:
+       [SAMPLE_COMM_VPSS_Init]-28: CVI_VPSS_CreateGrp(grp:0) failed with 0xc0068004!
+     0xc0068004 解码(见 cvi_errno.h 的 CVI_DEF_ERR):
+       [23:16]=0x06 模块=VPSS, [15:13]=4 等级=ERROR, [12:0]=4 => EN_ERR_EXIST
+     即"资源已存在" —— VPSS group 0 还占着。
+  2) 内核日志佐证:
+       vpss_open: open 2 times
+       vpss_create_grp:3331(): Grp(0) is occupied
+  3) 为什么: 板上那套 VPSS 模块**不在进程退出/fd 关闭时清理 group**,
+     而 group 是内核态资源。所以进程死了, group 还在。
+     (这正是用户最初"摄像头测试失败"时那个 VPSS 报错的成因。)
+  4) 清理办法(按顺序):
+       a) 先 killall -9 掉残留进程; 注意**僵尸进程(Z 状态)是杀不掉的**, 那没关系,
+          它已经不放 fd 了;
+       b) 确认没人开着 /dev/cvi-vpss:
+            for p in /proc/[0-9]*; do for fd in $p/fd/*; do \
+              [ "$(readlink $fd)" = /dev/cvi-vpss ] && echo "pid=${p#/proc/}"; done; done
+       c) 如果 group 仍被占, **只能 reboot**;
+       d) 模块本身卸不掉: lsmod 里 cv181x_vpss 的引用计数由 cv181x_mipi_tx 持有,
+          rmmod cv181x_vpss 一定报 Resource temporarily unavailable, 别浪费时间。
+  5) 预防: 给工具加信号处理, 退出前显式 DestroyGrp; 调试时不要用 kill -9。
+
+5.2 跑之前先确认没有别的程序占着 VI/VPSS
+--------------------------------------------------------------------------------
+  1) camera-test.sh / sample_vi_fd 都会占 VI+VPSS; 它们没退干净时, 本工具必然
+     CreateGrp 失败。
+  2) 固定检查:
+       ps | grep -E '[s]ample_vi_fd|[c]am_lcd'
+
+================================================================================
+  六、相关文件位置速查
+================================================================================
+
+  1) 大核工具源码   : <仓库>/tools/cam_lcd.c
+  2) ABI 探测工具   : <仓库>/tools/abi_probe.c
+  3) 共享内存头     : src/big_core/lcd_shm.h 与
+                      src/sdk_overlay/freertos/cvitek/task/comm/src/riscv64/lcd_shm.h
+  4) 小核 LVGL 任务 : src/sdk_overlay/freertos/cvitek/task/lvgl/lvgl_task.c
+  5) 小核显示驱动   : src/sdk_overlay/.../lvgl/lv_port_disp.c
+  6) 小核刷屏/ST7789: src/sdk_overlay/.../comm/src/riscv64/lcd_st7789.c
+  7) 小核命令分发   : src/sdk_overlay/.../comm/src/riscv64/comm_main.c
+  8) 可用的编译包   : <仓库>/duo-tdl-examples/   (头+库自洽的那套)
+                      /home/chen/duo-tdl-examples-master/ (同款, 2024-12)
+  9) 板上库(勿动)   : /mnt/system/lib, /mnt/system/usr/lib, /mnt/system/usr/lib/3rd
+ 10) 已拉回的板上库 : /home/chen/boardlibs/  (含 3rd/libini.so)

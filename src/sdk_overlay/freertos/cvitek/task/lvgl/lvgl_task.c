@@ -1,7 +1,7 @@
 /* 小核(C906L)上的 LVGL 主任务 —— 屏幕的唯一所有者
  *
- * 屏幕内容: 跑 LVGL 自带的 lv_demo_benchmark(屏上动态跑分), 右下角叠一块 OSD,
- * 显示帧率和两个核的 CPU 占用率:
+ * 屏幕内容: **不再跑 lv_demo_benchmark**(2026-10-03 去掉)。上电后是一块纯黑屏,
+ * 右下角叠一块 OSD, 显示帧率和两个核的 CPU 占用率:
  *
  *   nn.n FPS       <- 帧率(一位小数)
  *   nn% A53        <- 大核占用率
@@ -20,7 +20,8 @@
  *         回调的实际间隔总是略大于 period, 于是 frames/秒 会算成 0。
  *
  * 流程: lcd_init() 上电 ST7789(SPI2) -> lv_init() -> 注册显示驱动
- *       -> lv_demo_benchmark() -> 建 OSD -> 循环 lv_timer_handler()。
+ *       -> 屏底刷黑 -> 建 OSD -> 循环 lv_timer_handler()。
+ *       画面完全由大核的 LCD_CMD_CAM 触发(cam_enter); 在此之前屏上没有任何画面。
  */
 #include <stdio.h>
 
@@ -28,7 +29,6 @@
 #include "task.h"
 
 #include "lvgl.h"
-#include "demos/benchmark/lv_demo_benchmark.h"
 
 #include "lcd_st7789.h"
 #include "arch_helpers.h"       /* flush_dcache_range */
@@ -73,8 +73,8 @@ extern void sysdma_selftest(void);
 /* 每改一版小核固件就把这里 +1: 免烧热更(见 hotjump.S / lcd_sender rtos)之后
  * 用 `devmem <g_lvgl_probe+0x70> 32` 一眼就能确认芯片上跑的到底是哪一版
  * (g_lvgl_probe 的地址随固件体积变化, 用 nm cvirtos.elf | grep g_lvgl_probe 查)。 */
-#define LVGL_PROBE_BUILD_ID     0x484A0009UL        /* 'HJ' + 序号 */
-volatile unsigned long g_lvgl_probe[16];
+#define LVGL_PROBE_BUILD_ID     0x484A000BUL        /* 'HJ' + 序号; 0A=demo 版, 0B=去 demo版 */
+volatile unsigned long g_lvgl_probe[20];
 
 /* ==================== 运行时间统计的计数源 ============================
  * 25MHz mtime / 250 = 100kHz(10us 一格)。FreeRTOS 在每次任务切换时对
@@ -204,7 +204,7 @@ static void osd_timer_cb(lv_timer_t *timer)
 
 static void osd_create(void)
 {
-	s_osd = lv_label_create(lv_layer_sys());       /* 系统层, 盖在 demo 上面 */
+	s_osd = lv_label_create(lv_layer_sys());       /* 系统层, 盖在画面上面 */
 	lv_obj_set_style_bg_opa(s_osd, LV_OPA_60, 0);
 	lv_obj_set_style_bg_color(s_osd, lv_color_black(), 0);
 	lv_obj_set_style_text_color(s_osd, lv_color_white(), 0);
@@ -217,6 +217,66 @@ static void osd_create(void)
 	s_osd_prev_frames = g_lvgl_frame_cnt;
 
 	lv_timer_create(osd_timer_cb, OSD_REFRESH_MS, NULL);
+}
+
+/* ==================== 画面模式(摄像头) ============================== *
+ * 大核: 把一帧 RGB565(大端) 写进共享内存 fb 区 -> 发 LCD_CMD_CAM。
+ * comm_main.c 的 cmdqu 任务收到后只调 lvgl_cam_submit() "记一笔", **不碰 LVGL**:
+ * LVGL 不是线程安全的, 所有渲染都必须在下面这个任务里做。于是分工是——
+ * cmdqu 侧只写 s_cam_req/s_cam_seq(单字写, 天然原子), 本任务每轮开头 poll 一次。 */
+static lv_obj_t        *s_cam_img;
+static lv_img_dsc_t     s_cam_dsc;
+static volatile int     s_cam_req;      /* 1 = 收到过 LCD_CMD_CAM */
+static volatile uint32_t s_cam_seq;     /* 大核提交的帧号(统计用) */
+static volatile uint32_t s_cam_done;    /* 本任务已处理的帧数(统计用) */
+
+void lvgl_cam_submit(void)
+{
+	s_cam_req = 1;
+	s_cam_seq++;
+}
+
+static void cam_enter(void)
+{
+	lv_obj_t *scr;
+
+	/* 1) 屏底纯黑: 没有画面的地方是黑的, 不再是红/绿/蓝。
+	 *    (init 时已经设过一次, 这里再设一遍是为了防止主题改动把它覆盖) */
+	scr = lv_scr_act();
+	lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+	lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+	/* 2) lv_img 直接引用共享内存那块 RGB565, 一个字节都不拷贝。
+	 *    LV_COLOR_DEPTH=16 且 LV_COLOR_16_SWAP=1, 而 fb 里存的正是"高字节在
+	 *    前"的 RGB565 —— 与 ST7789 要的字节序、与 LVGL 的 lv_color_t 布局
+	 *    三者一致, 所以能直接当 LV_IMG_CF_TRUE_COLOR 用。 */
+	s_cam_dsc.header.always_zero = 0;
+	s_cam_dsc.header.cf          = LV_IMG_CF_TRUE_COLOR;
+	s_cam_dsc.header.w           = LCD_W;
+	s_cam_dsc.header.h           = LCD_H;
+	s_cam_dsc.data_size          = (uint32_t)LCD_W * LCD_H * 2u;
+	s_cam_dsc.data               = (const uint8_t *)(LCD_SHM_PHYS + LCD_SHM_FB_OFF);
+
+	s_cam_img = lv_img_create(scr);
+	lv_img_set_src(s_cam_img, &s_cam_dsc);
+	lv_obj_center(s_cam_img);
+}
+
+static void lvgl_cam_poll(void)
+{
+	if (!s_cam_req)
+		return;
+
+	if (s_cam_img == NULL)
+		cam_enter();
+
+	/* 大核刚写进去的新像素在 DRAM 里, 本核 cache 里可能还留着上一帧的旧行。
+	 * 送显前整块作废一次即可: 之后 LVGL 读到的要么是刚作废后重新取的新数据,
+	 * 要么是从 DRAM 新取的(这块内存只有大核写, 小核不会把它弄脏)。 */
+	inv_dcache_range((uintptr_t)(LCD_SHM_PHYS + LCD_SHM_FB_OFF),
+			 (size_t)LCD_W * LCD_H * 2u);
+	lv_obj_invalidate(s_cam_img);
+	s_cam_done++;
 }
 
 /* ==================== 任务 ========================================== */
@@ -239,15 +299,28 @@ static void prvLvglTask(void *pvParameters)
 	lv_init();
 	lv_port_disp_init();
 
-	lv_demo_benchmark();                            /* 屏上跑的动态 demo */
+	/* 本固件不带 demo: 上电就是黑屏。LVGL 默认(system, 亮色主题)会把当前
+	 * screen 刷成白色, 所以这里必须显式改黑 —— 只有右下角的 OSD 看得见。 */
+	{
+		lv_obj_t *scr = lv_scr_act();
+
+		lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+		lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+	}
+
 	osd_create();
 
-	p[1] = 0x600D;                                  /* demo + OSD 建完的标记 */
+	p[1] = 0x600D;                                  /* 黑屏 + OSD 建完的标记 */
 	flush_dcache_range((uintptr_t)p, sizeof(g_lvgl_probe));
 
 	for (;;) {
-		uint32_t t0 = lv_port_tick_us();
+		uint32_t t0;
 
+		/* 画面模式: 必须排在 lv_timer_handler() 之前 —— 这里只做"作废 cache
+		 * + 把 img 标脏", 真正的重画发生在 handler 内部。 */
+		lvgl_cam_poll();
+
+		t0 = lv_port_tick_us();
 		lv_timer_handler();
 		s_perf_handler_us += lv_port_tick_us() - t0;   /* 埋点: 本秒 LVGL 处理耗时 */
 
@@ -258,6 +331,10 @@ static void prvLvglTask(void *pvParameters)
 		p[6] = s_probe_hb;                          /* 大核 heartbeat */
 		p[7] = s_probe_fps;                         /* 帧率 ×10 (一位小数) */
 		p[8] = (unsigned long)g_lvgl_frame_cnt;     /* 累计整帧数 */
+		p[16] = (s_cam_img != NULL) ? 1ul : 0ul;    /* 画面模式标记 */
+		p[17] = (unsigned long)s_cam_seq;           /* 大核提交的帧号 */
+		p[18] = (unsigned long)s_cam_done;          /* 已处理的画面帧数 */
+		p[19] = 0x43414D52UL;                       /* 'CAMR' 魔数尾 */
 		flush_dcache_range((uintptr_t)p, sizeof(g_lvgl_probe));
 
 		vTaskDelay(pdMS_TO_TICKS(LVGL_HANDLER_PERIOD_MS));

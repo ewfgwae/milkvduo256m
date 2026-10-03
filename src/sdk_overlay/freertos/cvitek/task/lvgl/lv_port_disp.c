@@ -16,7 +16,7 @@
  * 而且按整屏开就得配 full_refresh = 1, 于是每帧固定推 153600 字节; 实测脏区
  * 平均只占 ~40% 屏(每帧约 61KB), 整屏刷反而让帧率从 ~57 掉到 ~30。
  *
- * 所以这里取两块 240x160(各 76800 B): 320 行正好切 2 块, 单次送显量够大、
+ * 所以这里取两块 320x120(各 76800 B): 240 行正好切 2 块, 单次送显量够大、
  * 切块数又少; 两块合计 153600 B 落在跳板后的空闲区(见 cv181x_lscript.ld 的
  * lvgl_fb_MEM_0), 完全不动应用区/LVGL 池/FreeRTOS 堆栈。
  *
@@ -32,8 +32,9 @@
 #include "lcd_st7789.h"
 #include "lv_port_tick.h"       /* lv_port_tick_us() */
 
-/* 半屏: 240 x 160 = 38400 像素 = 76800 字节。两块合计 153600 字节。 */
-#define LVGL_DRAW_LINES     160
+/* 半屏: 320 x 120 = 38400 像素 = 76800 字节。两块合计 153600 字节
+ * (= 屏 320x240 的一半, 也正好铺满 .lvgl_fb 那块区域)。 */
+#define LVGL_DRAW_LINES     120
 static lv_color_t s_draw_buf1[LCD_W * LVGL_DRAW_LINES] __attribute__((section(".lvgl_fb")));
 static lv_color_t s_draw_buf2[LCD_W * LVGL_DRAW_LINES] __attribute__((section(".lvgl_fb")));
 

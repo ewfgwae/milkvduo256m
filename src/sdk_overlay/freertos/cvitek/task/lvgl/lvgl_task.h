@@ -19,4 +19,10 @@ int  lvgl_mon_get(uint32_t *big_pct, uint32_t *heartbeat);
 /* 回执给大核的数字：小核占用率(%) 与 帧率×10。 */
 void lvgl_mon_reply(uint32_t *small_pct, uint32_t *fps_x10);
 
+/* ---- 画面模式(摄像头) ------------------------------------------------- *
+ * comm_main.c 的 cmdqu 任务收到 LCD_CMD_CAM 时调用。只置一个标志、给帧号 +1,
+ * 不碰任何 LVGL 对象 —— LVGL 不是线程安全的, 渲染统一在 LVGL 任务里做
+ * (见 lvgl_task.c 的 lvgl_cam_poll())。**不要回 ACK**。 */
+void lvgl_cam_submit(void);
+
 #endif /* __LVGL_TASK_H__ */
