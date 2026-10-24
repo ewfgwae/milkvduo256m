@@ -25,6 +25,10 @@
  *                                它收干净, 最后发 LCD_CMD_UI 回按钮页。
  *                                ★ 顺序不能反: 先回 UI 的话, 下一帧 CAM 又
  *                                会把 UI 盖掉
+ *   lcd_sender ui                单独发 LCD_CMD_UI。小核上电是启动页(转圈
+ *                                "正在初始化", 见 plans/05 Phase 6), 收到它
+ *                                才换按钮 UI 页 —— 开机 auto.sh 热更成功后
+ *                                自动发一次; 手动热更/调试后想回按钮页也用它。
  *   lcd_sender rtos <file>       免烧 fip 热更小核固件: 让小核跳进常驻跳板 ->
  *                                原地覆盖应用区 -> 跳回 _start。详见 do_rtos()。
  */
@@ -653,6 +657,17 @@ static int do_cam(const char *what)
 	return 2;
 }
 
+/* ui —— 单独发 LCD_CMD_UI: cam off 的最后一步, 也给开机自启(auto.sh 热更成功
+ * 后)和手动热更后的"回按钮页"用。小核在启动页/画面模式/启动中收到它的语义
+ * 见 lvgl_task.c 的 boot_leave()/ui_state_poll()。 */
+static int do_ui(void)
+{
+	if (cmd_send(LCD_CMD_UI, 0) != 0)
+		return 1;
+	printf("UI 已发出(屏回按钮页)\n");
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	const char *cmd = argc > 1 ? argv[1] : "stat";
@@ -703,6 +718,8 @@ int main(int argc, char **argv)
 			close(g_cmd_fd);
 			return rc;
 		}
+	} else if (!strcmp(cmd, "ui")) {
+		return do_ui();
 	} else if (!strcmp(cmd, "rtos")) {
 		if (argc < 3) {
 			fprintf(stderr, "用法: lcd_sender rtos <cvirtos.bin>\n");

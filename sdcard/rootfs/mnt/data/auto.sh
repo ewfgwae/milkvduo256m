@@ -1,11 +1,14 @@
 #!/bin/sh
 # 开机自启。由 /etc/init.d/S99user 调起(见该脚本里的 $USERDATAPATH/auto.sh 分支)。
 #
-# 做两件事:
+# 做三件事:
 #   1) 把同目录下的 cvirtos.bin 热更到小核(C906L)。免烧 fip.bin、免重启系统:
 #      大核把新固件写进小核内存区(0x8FE00000), 小核自己跳到常驻跳板再重跑。
 #      所以"改小核代码 -> 只换 /mnt/data/cvirtos.bin" 就能生效。
-#   2) ★ 不再默认起 lcd_sender mon。原因见下面「mon 为什么被摘掉」。
+#   2) 热更成功后发一条 lcd_sender ui: 小核固件(0x484A000F 起)上电是启动页
+#      (转圈"正在初始化"), 收到 ui 才换成按钮 UI 页。失败不发 —— 那时屏上
+#      跑的是 fip.bin 老固件, 不认识 0x4A。
+#   3) ★ 不再默认起 lcd_sender mon。原因见下面「mon 为什么被摘掉」。
 #
 # 日志: /tmp/lcd_reload.log (热更)。/tmp 重启会清空。
 # 注意: 本板 busybox 没有 pkill, 用 killall。
@@ -46,8 +49,10 @@ if [ -x /mnt/data/lcd_sender ]; then
 	done
 
 	# 热更小核固件。失败也不影响后面 —— 屏幕上跑的还是 fip.bin 里那版固件。
+	# 成功(rc=0)才追加发 ui 让小核离启动页(见文件头"做三件事"第 2 条)。
 	if [ -f /mnt/data/cvirtos.bin ]; then
-		/mnt/data/lcd_sender rtos /mnt/data/cvirtos.bin >/tmp/lcd_reload.log 2>&1
+		/mnt/data/lcd_sender rtos /mnt/data/cvirtos.bin >/tmp/lcd_reload.log 2>&1 \
+			&& /mnt/data/lcd_sender ui >>/tmp/lcd_reload.log 2>&1
 	fi
 
 	# ---- 想让摄像头画面开机自动上屏? 取消下面两行的注释 ----

@@ -1,8 +1,9 @@
 /* 小核(C906L)上的 LVGL 主任务 —— 屏幕的唯一所有者
  *
- * 屏幕内容: **不再跑 lv_demo_benchmark**(2026-10-03 去掉)。上电后是"智能看家"
- * UI 待机页(标题 + 「相机画面」大按钮 + 状态栏, 详见下面"UI 页"一节),
- * 右下角叠一块 OSD, 显示帧率和两个核的 CPU 占用率:
+ * 屏幕内容: **不再跑 lv_demo_benchmark**(2026-10-03 去掉)。上电先是启动页
+ * (黑底 + 转圈 + 「正在初始化...」, 见下面"启动页"一节), 大核就绪(发来
+ * LCD_CMD_UI)后才换成"智能看家" UI 待机页(标题 + 「相机画面」大按钮 + 状态栏,
+ * 详见"UI 页"一节), 右下角叠一块 OSD, 显示帧率和两个核的 CPU 占用率:
  *
  *   nn.n FPS       <- 帧率(一位小数)
  *   nn% A53        <- 大核占用率
@@ -21,7 +22,8 @@
  *         回调的实际间隔总是略大于 period, 于是 frames/秒 会算成 0。
  *
  * 流程: lcd_init() 上电 ST7789(SPI2) -> lv_init() -> 注册显示驱动
- *       -> 屏底刷黑 -> 建 OSD -> 建 UI 页 -> 循环 lv_timer_handler()。
+ *       -> 屏底刷黑 -> 建 OSD -> 建 UI 页(整体隐藏) -> 建启动页
+ *       -> 循环 lv_timer_handler()。
  *       摄像头画面由大核的 LCD_CMD_CAM 触发(cam_enter, 首帧到达时 UI 页整个
  *       隐藏); LCD_CMD_UI 退画面回 UI 页(cam_exit)。
  */
@@ -76,7 +78,7 @@ extern void sysdma_selftest(void);
 /* 每改一版小核固件就把这里 +1: 免烧热更(见 hotjump.S / lcd_sender rtos)之后
  * 用 `devmem <g_lvgl_probe+0x70> 32` 一眼就能确认芯片上跑的到底是哪一版
  * (g_lvgl_probe 的地址随固件体积变化, 用 nm cvirtos.elf | grep g_lvgl_probe 查)。 */
-#define LVGL_PROBE_BUILD_ID     0x484A000EUL        /* 'HJ' + 序号; 0C=UI 按钮页, 0D=超时 15s, 0E=画面模式「退出」按钮 */
+#define LVGL_PROBE_BUILD_ID     0x484A000FUL        /* 'HJ' + 序号; 0D=超时 15s, 0E=画面模式「退出」按钮, 0F=上电启动页(Phase 6) */
 volatile unsigned long g_lvgl_probe[20];
 
 /* ==================== 运行时间统计的计数源 ============================
@@ -227,6 +229,7 @@ static void osd_create(void)
  * 容器下, 进画面模式时 LV_OBJ_FLAG_HIDDEN 一次性隐藏(逐个藏对象容易漏)。
  *
  * 状态机(全部在本任务里跑, comm 侧只置标志 —— LVGL 不是线程安全的):
+ *   上电 -> 启动页(转圈, 见"启动页"一节) --UI/BTN/首帧 CAM 任一--> 离页
  *   待机 --LCD_CMD_BTN--> 按下动画(180ms) --> 启动中(spinner, 15s 超时)
  *     |首帧 LCD_CMD_CAM 到来 ----> 画面模式(UI 隐藏)
  *     |超时 15s -----------------> 回待机, 红字「超时，再来一次」
@@ -433,6 +436,66 @@ static void ui_create(void)
 	s_ui_state = UI_STANDBY;
 }
 
+/* ==================== 启动页(Phase 6) ================================ *
+ * 上电默认页: 全屏黑底 + 56px 转圈 + 「正在初始化...」。大核(A53/Linux)没起来的
+ * 整段时间屏上只有它 —— 完整按钮 UI 已照常建好但整体隐藏, 收到下面任一命令才
+ * 揭开(boot_leave, 三个入口都调它):
+ *   LCD_CMD_UI  auto.sh 热更成功后发 / lcd_sender ui / cam off 末步 -> 待机页
+ *   LCD_CMD_BTN cam on 当开机首个命令 -> 先出 UI 页再播按下动画
+ *   首帧 CAM    不 BTN 直接起 rtsp2lcd -> 直进画面(启动页不能残留盖在画面上)
+ * MON / INIT / PING **故意不离页**: mon 是诊断工具且与 rtsp2lcd 互斥, 不在开机
+ * 路径上; INIT 是 lcd_sender rtos 热更后的 state 轮询, 不能让它把启动页顶掉。
+ * 无超时 —— 大核没起来就永远转圈, 这是需求语义本身。
+ *
+ * 文案「正在初始化...」: 「正在启动」的 启/动 都不在 SIMSUN16(2026-10-25 逐字
+ * 预检), 已验证在库的备选: 正在等待... / 等待中...。 */
+static lv_obj_t *s_boot_cont;
+
+static void boot_create(void)
+{
+	lv_obj_t *cont, *spin, *lbl;
+
+	/* 全屏不透明黑底容器, 建在 UI 页之后 = 盖在 UI 页之上(sys 层 OSD 之下) */
+	cont = lv_obj_create(lv_scr_act());
+	lv_obj_set_size(cont, LCD_W, LCD_H);
+	lv_obj_center(cont);
+	lv_obj_set_style_bg_color(cont, lv_color_black(), 0);
+	lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
+	lv_obj_set_style_border_width(cont, 0, 0);
+	lv_obj_set_style_pad_all(cont, 0, 0);
+	lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+
+	/* 转圈: 「启动中」那只 spinner 的放大版, 同一套青色系 */
+	spin = lv_spinner_create(cont, 150, 90);
+	lv_obj_set_size(spin, 56, 56);
+	lv_obj_align(spin, LV_ALIGN_CENTER, 0, -14);
+	lv_obj_set_style_border_width(spin, 0, LV_PART_MAIN);
+	lv_obj_set_style_arc_width(spin, 6, LV_PART_MAIN);
+	lv_obj_set_style_arc_color(spin, lv_color_hex(0x37474F), LV_PART_MAIN);
+	lv_obj_set_style_arc_width(spin, 6, LV_PART_INDICATOR);
+	lv_obj_set_style_arc_color(spin, lv_color_hex(0x00E5FF), LV_PART_INDICATOR);
+
+	lbl = lv_label_create(cont);
+	lv_obj_set_style_text_font(lbl, &lv_font_simsun_16_cjk, 0);
+	lv_obj_set_style_text_color(lbl, lv_color_hex(0xB0BEC5), 0);
+	lv_obj_set_style_text_letter_space(lbl, 2, 0);
+	lv_label_set_text(lbl, "正在初始化...");
+	lv_obj_align_to(lbl, spin, LV_ALIGN_OUT_BOTTOM_MID, 0, 14);
+
+	s_boot_cont = cont;
+}
+
+/* 幂等: 启动页还在时才动手 —— 删容器、揭开按钮 UI 页 */
+static void boot_leave(void)
+{
+	if (s_boot_cont != NULL) {
+		lv_obj_del(s_boot_cont);
+		s_boot_cont = NULL;
+		lv_obj_clear_flag(s_ui_cont, LV_OBJ_FLAG_HIDDEN);
+	}
+}
+
 /* 状态机推进: 每轮主循环在 lv_timer_handler() 之前跑(改对象只管改,
  * 真正重画在 handler 里发生), 先处理画面 poll 再处理这里 —— 首帧 CAM
  * 抢先把 UI 藏掉的话, 同轮后到的 BTN 会被正确忽略。 */
@@ -440,9 +503,11 @@ static void ui_state_poll(void)
 {
 	uint32_t now = lv_tick_get();
 
-	/* LCD_CMD_UI: 退画面回 UI 页; 启动中收到 = 大核放弃启动, 按取消处理 */
+	/* LCD_CMD_UI: 退画面回 UI 页; 启动中收到 = 大核放弃启动, 按取消处理;
+	 * 启动页状态下收到 = 大核就绪, 揭开按钮页(状态保持「待机」—— cam 没跑过) */
 	if (s_ui_ret_req) {
 		s_ui_ret_req = 0;
+		boot_leave();
 		if (s_cam_img != NULL) {
 			cam_exit();              /* 内部把状态收干净, 显示"已停止" */
 		} else if (s_ui_state != UI_STANDBY) {
@@ -451,10 +516,12 @@ static void ui_state_poll(void)
 		}
 	}
 
-	/* LCD_CMD_BTN: 触发按下动画; 画面模式/启动中/动画中来的一律忽略 */
+	/* LCD_CMD_BTN: 触发按下动画; 画面模式/启动中/动画中来的一律忽略;
+	 * 启动页状态下收到(cam on 当开机首个命令) = 先出 UI 页再播动画 */
 	if (s_ui_btn_req) {
 		s_ui_btn_req = 0;
 		if (s_cam_img == NULL && s_ui_state == UI_STANDBY) {
+			boot_leave();
 			lv_obj_add_state(s_ui_btn, LV_STATE_PRESSED);
 			s_ui_state    = UI_PRESSING;
 			s_ui_state_t0 = now;
@@ -514,6 +581,11 @@ static void cam_enter(void)
 {
 	lv_obj_t *scr;
 	lv_obj_t *lbl;
+
+	/* -1) 启动页下首帧直接到达(没经过 BTN, 直接起了 rtsp2lcd): 先撕启动页,
+	 *     否则它会盖在画面之上(画面对象是后建的, z 序在启动页上面, 但
+	 *     OSD 之下还压着一块全屏黑底, 必须删掉)。 */
+	boot_leave();
 
 	/* 0) 首帧到达 = 切画面: UI 页整个藏掉, 状态机收干净(给 cam_exit 一个
 	 *    干净起点; 若是从"启动中"直切画面, spinner 也就是在这收的)。 */
@@ -636,6 +708,10 @@ static void prvLvglTask(void *pvParameters)
 	osd_create();
 
 	ui_create();                                /* plans/05: 按钮界面待机页 */
+
+	/* Phase 6: 上电默认只显启动页 —— UI 页建好即整体藏起, boot_leave() 揭开 */
+	lv_obj_add_flag(s_ui_cont, LV_OBJ_FLAG_HIDDEN);
+	boot_create();
 
 	/* 触摸骨架(plans/06 芯片定型号前的占位): 注册指针型 indev, 读回调
 	 * 恒返回未按下 —— 按钮 CLICKED 链路先就位, 真驱动只改 lcd_touch.c。 */

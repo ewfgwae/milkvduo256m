@@ -9,7 +9,8 @@ Milk-V **Duo256M**（SG2002）双核 LCD 监控小设备：**小核 C906L（Free
 - 大核：`lcd_sender` 命令行工具（刷色/彩条/动画/背光/**热更小核固件**）
 - 大小核通讯：**IPCM mailbox（cmdqu）传命令** + **共享内存传像素**，不经过 Linux 的 spidev
 - 小核固件支持**热更**：改完只换一个 `cvirtos.bin`，不烧 `fip.bin`、不重启
-- 开机自启：`/etc/init.d/S99user` 调 `/mnt/data/auto.sh`，自动热更小核固件（**不再起 CPU 监控 `mon`**，它会和摄像头推屏抢 cmdqu）
+- 开机自启：`/etc/init.d/S99user` 调 `/mnt/data/auto.sh`，自动热更小核固件，成功后发一条
+  `lcd_sender ui` 把屏从「正在初始化」启动页切到按钮 UI 页（**不再起 CPU 监控 `mon`**，它会和摄像头推屏抢 cmdqu）
 
 ---
 
@@ -93,8 +94,9 @@ cd image
 cmd /c copy /b duo256m-sdcard.img.gz.part-00+duo256m-sdcard.img.gz.part-01+duo256m-sdcard.img.gz.part-02 duo256m-sdcard.img.gz
 ```
 
-插卡上电，屏幕应该是**中文 UI 待机页**（标题「智能看家」+「相机画面」大按钮 + 右下角
-OSD 小字）。想看摄像头画面，在板上跑 `/root/lcd_sender cam on` 即可（见 6.5 节）。
+插卡上电，屏幕先是**「正在初始化…」启动页**（黑底转圈，右下角 OSD 小字），Linux 起来、
+`auto.sh` 热更成功后自动换成**中文 UI 待机页**（标题「智能看家」+「相机画面」大按钮）。
+想看摄像头画面，在板上跑 `/root/lcd_sender cam on` 即可（见 6.5 节）。
 
 > ★ 上面这份整卡镜像里的 `cvirtos.bin` 还是**带 demo 的旧版**（早于 build `0x484A000B`）。
 > 所以第一次上电（或任何一次卡上 `/mnt/data/cvirtos.bin` 仍是旧版的开机），屏上还会先出
@@ -122,8 +124,8 @@ OSD 小字）。想看摄像头画面，在板上跑 `/root/lcd_sender cam on` �
 |---|---|---|
 | `sdcard/boot/fip.bin` | FAT 分区（p1，`/boot`） | FSBL + u-boot + 小核固件（BLCP_2ND 段）+ 常驻热更跳板 |
 | `sdcard/boot/boot.sd` | FAT 分区（p1，`/boot`） | Linux 内核 + 设备树（含 SPI2 的 DMA 请求线映射） |
-| `sdcard/rootfs/mnt/data/auto.sh` | ext4 分区（p2）`/mnt/data/` | 开机自启：热更小核固件（**不再起 `mon`**，见 6.1 的注） |
-| `sdcard/rootfs/mnt/data/cvirtos.bin` | ext4 分区（p2）`/mnt/data/` | 小核固件（build id `0x484A000D`，md5 `29d29d8a…`），**每次开机 auto.sh 自动热更进小核** |
+| `sdcard/rootfs/mnt/data/auto.sh` | ext4 分区（p2）`/mnt/data/` | 开机自启：热更小核固件，成功后发 `lcd_sender ui` 离启动页（**不再起 `mon`**，见 6.1 的注） |
+| `sdcard/rootfs/mnt/data/cvirtos.bin` | ext4 分区（p2）`/mnt/data/` | 小核固件（build id `0x484A000F`，md5 `24c5fcd3…`），**每次开机 auto.sh 自动热更进小核** |
 | `sdcard/rootfs/mnt/data/lcd_sender` | ext4 分区（p2）`/mnt/data/` | 大核 aarch64 静态程序（含 `rtos` 热更子命令） |
 | `sdcard/rootfs/root/*` | ext4 分区（p2）`/root/` | 同一批文件的副本 + 大核用户态例子，供手动调试 |
 | `sdcard/rootfs/etc/init.d/S99user` | ext4 分区（p2）`/etc/init.d/` | 原厂启动脚本（**未改**），它负责调用 `/mnt/data/auto.sh` |
@@ -292,7 +294,8 @@ cd duo-examples && source envsetup.sh          # 选 2 = Duo256M，选 riscv/arm
   └─ /mnt/system/ko/loadsystemko.sh
   └─ /mnt/data/auto.sh        (本工程)
        ├─ killall lcd_sender ; 清 8 个 IPCM 槽位
-       └─ lcd_sender rtos /mnt/data/cvirtos.bin    # 热更小核固件
+       ├─ lcd_sender rtos /mnt/data/cvirtos.bin    # 热更小核固件
+       └─ lcd_sender ui                            # 热更成功才发: 屏从启动页切按钮 UI 页
 ```
 
 日志：`/tmp/lcd_reload.log`（热更）。`/tmp` 是 tmpfs，重启清空。
@@ -307,8 +310,10 @@ cd duo-examples && source envsetup.sh          # 选 2 = Duo256M，选 riscv/arm
 
 整套功能 = 3 个文件：`/boot/fip.bin`、`/boot/boot.sd`、`/mnt/data/{auto.sh,cvirtos.bin,lcd_sender}`。
 
-**上电后屏上是什么**：一页**中文 UI 待机页**——标题「智能看家」、中间「相机画面」大按钮、
-状态栏「待机」、左下角命令提示；右下角 OSD（帧率 / A53 占用率 / C906 占用率）不变。
+**上电后屏上是什么**：先是**启动页**——黑底 + 转圈 + 「正在初始化...」，大核没就绪它就
+一直转（无超时）；`auto.sh` 热更成功后发 `lcd_sender ui`，屏换成**中文 UI 待机页**——
+标题「智能看家」、中间「相机画面」大按钮、状态栏「待机」、左下角命令提示；右下角
+OSD（帧率 / A53 占用率 / C906 占用率）两页都在。
 终端一条命令即可完成"按下按钮 → 起链路 → 画面满屏"：
 
 ```bash
@@ -317,8 +322,9 @@ cd duo-examples && source envsetup.sh          # 选 2 = Duo256M，选 riscv/arm
 ```
 
 （屏无触摸，这是当前唯一入口；触摸芯片定型号后由 plans/06 接管。）
-小核固件从 build `0x484A000B` 起不再自带 `lv_demo_benchmark`，`0x484A000C` 起上电默认页
-换成上述 UI。想确认小核在跑：
+小核固件从 build `0x484A000B` 起不再自带 `lv_demo_benchmark`，`0x484A000C` 起带按钮 UI 页，
+`0x484A000F` 起上电先是「正在初始化...」启动页、收到 `lcd_sender ui` 才换按钮页（手动
+热更后想回按钮页，发一条 `/root/lcd_sender ui` 即可）。想确认小核在跑：
 
 ```bash
 ssh root@192.168.42.1 '/root/lcd_sender ping'
@@ -340,6 +346,7 @@ ssh root@192.168.42.1 '/root/lcd_sender ping'
 | `lcd_sender anim 300` | 移动白条，局部刷新，跑 300 帧 |
 | `lcd_sender cam on` | 屏上按钮按下动画 → 起摄像头链路 → 画面满屏（等价于替你按屏上按钮） |
 | `lcd_sender cam off` | 先按屏上「退出」按钮（发 `LCD_CMD_EXIT_BTN`），停链路收干净后回 UI「已停止」 |
+| `lcd_sender ui` | 单独发 `LCD_CMD_UI`：让小核离开「正在初始化」启动页/画面模式，回按钮页（开机 `auto.sh` 自动发一次，手动热更后也用它） |
 | `lcd_sender mon 1000` | 每秒采样 `/proc/stat`，把大核 CPU 占用率发给小核 OSD，并接回小核占用率与帧率。★ **和 `rtsp2lcd` 互斥，见 6.1 的注** |
 | `lcd_sender rtos <固件>` | **热更小核固件**（见 5.4） |
 
@@ -377,6 +384,7 @@ ssh root@192.168.42.1 '/root/lcd_sender ping'
 | `0x484A000C` | `0x8fe82818` | 中文 UI 待机页 + 按钮状态机（plans/05；`LCD_CMD_BTN 0x49` / `LCD_CMD_UI 0x4A`） |
 | `0x484A000D` | `0x8fe82818` | 同 0C，启动超时 25s → 15s（基址不变：只改了常量，没动体积） |
 | `0x484A000E` | `0x8fe829d8` | 画面模式右上角「退出」按钮（`LCD_CMD_EXIT_BTN 0x4B`，`cam off` 触发按下动画） |
+| `0x484A000F` | `0x8fe82b98` | 上电启动页（黑底转圈「正在初始化...」，收到 `ui`/`BTN`/首帧 CAM 才离页；`auto.sh` 热更成功后自动发 `ui`） |
 
 ★ 去 demo 那版把 `.bss` 整段挪了位，**地址一下跳了 ~90KB**。还按老地址读会得到一片垃圾，
 很容易误判成"固件没起来"。板上 `/root/probe.sh` 里 `P=` 就是基址，换固件后改这里；
