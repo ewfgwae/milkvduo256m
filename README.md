@@ -53,27 +53,25 @@ Milk-V **Duo256M**（SG2002）双核 LCD 监控小设备：**小核 C906L（Free
 gzip 后分卷存放（避开 GitHub 单文件 100MB 限制）：
 
 ```
-image/duo256m-sdcard.img.gz.part-00   70 MiB
-image/duo256m-sdcard.img.gz.part-01   70 MiB
-image/duo256m-sdcard.img.gz.part-02   56 MiB
-image/CHECKSUMS.txt                   校验值（已验证与板子逐文件一致）
+image/duo256m-sdcard-2026.10.25.img.gz.part-00   70 MiB
+image/duo256m-sdcard-2026.10.25.img.gz.part-01   70 MiB
+image/duo256m-sdcard-2026.10.25.img.gz.part-02   54 MiB
+image/CHECKSUMS.txt                              校验值（已验证与板子逐文件一致）
 ```
 
 镜像里的 `fip.bin` / `boot.sd` / `S99user` / `auto.sh` / `cvirtos.bin` / `lcd_sender`
 已与板子上的实测 md5 逐一比对一致，ext4 分区已用 `e2fsck -fy` 修复为干净状态。
-镜像取自板上那张卡的前 897 MiB，本次更新做了三件事：① 换入 **0x484A0009** 版小核
-固件与新版 `lcd_sender`；② 清掉 `/root` 下的一批垃圾文件（文件名内嵌控制字符的
-监控残留 + 两个旧固件实验文件）；③ 把 `/root/指南/` 换成最新 `readme.txt` 并补上
-`2026.9.28.txt`。完整校验值见 `image/CHECKSUMS.txt`。
-> 注：指南从 2026-09-30 起改用「日期-类别-问题简述」命名（见第 4 节），
-> 上面这份镜像里的文件名仍是改名前的旧名。
+**镜像文件名自本版（2026.10.25）起带制作日期（年.月.日）**。本版要点：fip 载荷与
+`/mnt/data`、`/root` 固件统一为 **0x484A0010**（启动页美化版，上电即「正在初始化」，
+无跑分 demo）；`lcd_sender` 带 `ui` 子命令；`auto.sh` 热更成功后自动发 `ui`；
+`/root/指南/` 为 8 文件新版；p1/p2 实验残留已清。完整校验值见 `image/CHECKSUMS.txt`。
 
 ### 2.1 合并 + 解压（WSL / Linux）
 
 ```bash
-cat duo256m-sdcard.img.gz.part-* > duo256m-sdcard.img.gz
-gunzip -k duo256m-sdcard.img.gz          # 得到 duo256m-sdcard.img（897 MiB）
-md5sum duo256m-sdcard.img.gz             # 应 = 191d92629ed0f166cc1035e69fff2e58
+cat duo256m-sdcard-2026.10.25.img.gz.part-* > duo256m-sdcard-2026.10.25.img.gz
+gunzip -k duo256m-sdcard-2026.10.25.img.gz   # 得到 897 MiB 裸镜像
+md5sum duo256m-sdcard-2026.10.25.img.gz      # 应 = 52794a36ab74fdb48e09c497251f5dbc
 ```
 
 ### 2.2 写卡
@@ -91,22 +89,15 @@ sync
 
 ```powershell
 cd image
-cmd /c copy /b duo256m-sdcard.img.gz.part-00+duo256m-sdcard.img.gz.part-01+duo256m-sdcard.img.gz.part-02 duo256m-sdcard.img.gz
+cmd /c copy /b duo256m-sdcard-2026.10.25.img.gz.part-00+duo256m-sdcard-2026.10.25.img.gz.part-01+duo256m-sdcard-2026.10.25.img.gz.part-02 duo256m-sdcard-2026.10.25.img.gz
 ```
 
 插卡上电，屏幕先是**「正在初始化」启动页**（深蓝渐变底 + 标题「智能看家」+ 转圈，
-右下角 OSD 小字），Linux 起来、`auto.sh` 热更成功后自动换成**中文 UI 待机页**
-（标题「智能看家」+「相机画面」大按钮）。想看摄像头画面，在板上跑
-`/root/lcd_sender cam on` 即可（见 6.5 节）。
+右下角 OSD 小字）——**从上电第一秒就是它，镜像里的 fip 已是 0x484A0010，无跑分
+demo**；Linux 起来、`auto.sh` 热更成功后自动换成**中文 UI 待机页**（标题「智能看家」+
+「相机画面」大按钮）。想看摄像头画面，在板上跑 `/root/lcd_sender cam on` 即可（见 6.5 节）。
 
-> ★ 上面这份整卡镜像里的 `fip.bin`/`cvirtos.bin` 还是**旧版**（fip 里的小核固件带跑分
-> demo）。所以只用镜像刷的卡，第一次上电会先跑一次 demo，~40s 后 `auto.sh` 热更成新版
-> 才换「正在初始化」启动页 → 按钮页。想**开箱即是启动页（无 demo）**，刷完卡把仓库
-> `sdcard/boot/fip.bin`（已含 build `0x484A0010`）拷进 p1 分区 `/boot/`，再把
-> `sdcard/rootfs/mnt/data/cvirtos.bin`、`sdcard/rootfs/root/cvirtos.bin` 拷进 p2 对应
-> 位置即可（`auto.sh` 每次开机都会拿 `/mnt/data/cvirtos.bin` 热更小核；新版 fip 现含
-> build `0x484A0010`）。
-> 已经开着的板子可以当场换固件：
+> 已经开着的板子想升级固件可以当场换（热更，不动 fip）：
 >
 > ```bash
 > scp sdcard/rootfs/mnt/data/cvirtos.bin root@192.168.42.1:/mnt/data/cvirtos.bin.new
@@ -115,7 +106,7 @@ cmd /c copy /b duo256m-sdcard.img.gz.part-00+duo256m-sdcard.img.gz.part-01+duo25
 > ```
 >
 > （`fip.bin` 平时**不要动**——它有变砖风险；要换里面的固件走 `plans/07` 的
-> fiptool 载荷替换流程，2026-10-25 已执行过一次。）
+> fiptool 载荷替换流程，2026-10-25 已执行过两次。）
 
 > 卡的容量：镜像只有 897 MiB，**任何 ≥1GB 的卡都能写**（写完整卡会多出未分配空间，
 > 不影响启动；想用完剩余空间可用 `cfdisk`/`parted` 扩 p2 后再 `resize2fs`）。

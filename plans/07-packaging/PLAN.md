@@ -18,7 +18,7 @@ sync
 3. 或者板子在手，直接 ssh 覆盖（固件走热更立即生效，见 `../01/PLAN.md` 一.5-7）。
 4. 验证：`md5sum` 抽查固件与工具；重启一次板子，开机行为正确（新版 UI/黑屏指纹 + 探针 build id）。
 
-## 二、整卡镜像重制流程（大版本发布才做；上一次是 0c14f34）
+## 二、整卡镜像重制流程（大版本发布才做；上一次是 2026-10-25）
 
 前置：板上已把新版固件/工具/指南全部就位并验证；`/root` 下无临时垃圾。
 
@@ -30,11 +30,12 @@ sync
 sudo dd if=/dev/sdX of=duo256m-sdcard.img bs=4M count=2243 conv=fsync status=progress
 ```
 
-4. **分卷压缩**（避开 GitHub 单文件 100MB 限制）：
+4. **分卷压缩**（避开 GitHub 单文件 100MB 限制）。**文件名带制作日期（年.月.日，
+   2026-10-25 用户定）**，如 `duo256m-sdcard-2026.10.25.img.gz.part-00`：
 
 ```bash
 gzip -k -9 duo256m-sdcard.img
-split -b 70MiB duo256m-sdcard.img.gz duo256m-sdcard.img.gz.part-
+split -b 70MiB duo256m-sdcard-2026.10.25.img.gz duo256m-sdcard-2026.10.25.img.gz.part-
 ```
 
 5. **校验清单**：更新 `image/CHECKSUMS.txt`（各分卷 + 合并后 .gz 的 md5/sha256）；
@@ -47,9 +48,9 @@ split -b 70MiB duo256m-sdcard.img.gz duo256m-sdcard.img.gz.part-
 
 ```bash
 # WSL/Linux:
-cat duo256m-sdcard.img.gz.part-* > duo256m-sdcard.img.gz
-gunzip -k duo256m-sdcard.img.gz
-md5sum duo256m-sdcard.img.gz        # 应 = CHECKSUMS.txt 里的值
+cat duo256m-sdcard-2026.10.25.img.gz.part-* > duo256m-sdcard-2026.10.25.img.gz
+gunzip -k duo256m-sdcard-2026.10.25.img.gz
+md5sum duo256m-sdcard-2026.10.25.img.gz   # 应 = CHECKSUMS.txt 里的值
 sudo dd if=duo256m-sdcard.img of=/dev/sdX bs=4M conv=fsync status=progress && sync
 # Windows: 合并成 .gz 后直接 balenaEtcher 选 .gz 写卡亦可
 ```
@@ -100,5 +101,8 @@ python3 ~/duo-sdk-v2/fsbl/plat/cv181x/fiptool.py genfip \
 
 ## 五、待办清单
 
-- [ ] plans/05/06 实施完后：README 第 2/3 节的"上电行为"与文件清单要重写一轮，
-      整卡镜像重制一次（走本 PLAN 二）。
+- [x] plans/05/06 实施完后：README 第 2/3 节的"上电行为"与文件清单要重写一轮，
+      整卡镜像重制一次（走本 PLAN 二）。—— 2026-10-25 完成：**2026.10.25 版镜像**，
+      未取卡，走"旧镜像 loop 挂载原地更新"路径（先校验旧 gz md5=档案值，再以仓库
+      `sdcard/` 为源全量覆写 + 清残留 + e2fsck/dosfsck，逐文件 md5 与板/仓库三方一致后
+      gzip 分卷）；fip 载荷与固件统一 0x484A0010，开箱即启动页。命名自本版起带日期。
