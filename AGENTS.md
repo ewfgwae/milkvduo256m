@@ -35,6 +35,11 @@ CVI_VDEC 硬件解码，把画面经**共享内存（像素）+ IPCM mailbox / c
   （探针 / 日志），不要静默吞掉。
 - **先计划后动手**：跨核、动协议、动固件的事，先在对应 `plans/*/PLAN.md` 里落计划再实施；
   实施完把结果与实测数字回填到 PLAN 的「实施结果」。
+- **提交格式（2026-10-25 用户定）**：git 提交**一律**按 GitHub 规范的中文 Conventional
+  Commits 写——`类型(范围): 一句话中文标题`：类型用 `feat` / `fix` / `docs` / `refactor` /
+  `chore` 等标准词，范围写模块号或组件（如 `feat(05-ui-button)`、`fix(07-packaging)`、
+  `docs(plans)`）；标题末尾不加句号；要展开时隔一行用列表写要点与实测数字。
+  照仓库近期提交的样子写（`git log --oneline -10` 参照）。
 
 ## 安全铁律（每一次动手前先过一遍）
 
