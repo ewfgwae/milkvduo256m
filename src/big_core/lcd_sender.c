@@ -18,6 +18,13 @@
  *   lcd_sender mon [间隔ms]      采样 /proc/stat, 用 mailbox(LCD_CMD_MON) 把大核
  *                                CPU 占用率发给小核, 小核 OSD 直接显示;
  *                                回执里带回小核自己的占用率与帧率 (默认 1000ms)
+ *   lcd_sender cam on            发 LCD_CMD_BTN(屏上先出按下动画/启动中)再后台
+ *                                起 /root/lcdcam.sh 推流, 首帧到达屏自动切画面
+ *   lcd_sender cam off           先发 LCD_CMD_EXIT_BTN(画面右上角「退出」按
+ *                                钮出按下动画), 再 sh /root/lcdcam.sh stop 等
+ *                                它收干净, 最后发 LCD_CMD_UI 回按钮页。
+ *                                ★ 顺序不能反: 先回 UI 的话, 下一帧 CAM 又
+ *                                会把 UI 盖掉
  *   lcd_sender rtos <file>       免烧 fip 热更小核固件: 让小核跳进常驻跳板 ->
  *                                原地覆盖应用区 -> 跳回 _start。详见 do_rtos()。
  */
@@ -615,6 +622,37 @@ out:
 	return rc;
 }
 
+/* cam on/off —— plans/05: 按钮界面的终端入口 */
+static int do_cam(const char *what)
+{
+	if (!strcmp(what, "on")) {
+		/* 先 BTN: 屏上 ~1s 内就有按下动画+spinner, 不用干等链路冷启动 */
+		if (cmd_send(LCD_CMD_BTN, 1) != 0)
+			return 1;
+		printf("BTN 已发出(屏进启动中), 起 lcdcam.sh 推流...\n");
+		if (system("sh /root/lcdcam.sh start") != 0) {
+			fprintf(stderr, "lcdcam.sh start 失败(屏会在 25s 后超时回待机)\n");
+			return 1;
+		}
+		return 0;
+	}
+	if (!strcmp(what, "off")) {
+		/* 先 EXIT_BTN: cam off = "指令按下屏上退出按钮", 屏上先出按下
+		 * 反馈再慢慢收链路。纯视觉, 发失败也不拦后续流程。 */
+		cmd_send(LCD_CMD_EXIT_BTN, 1);
+		/* ★ 先停链路并等它收干净, 再回 UI: 顺序反了的话, 下一帧 CAM
+		 *   又会把刚显示的 UI 盖掉(切回画面模式)。 */
+		if (system("sh /root/lcdcam.sh stop") != 0)
+			fprintf(stderr, "lcdcam.sh stop 异常退出(继续发 UI)\n");
+		if (cmd_send(LCD_CMD_UI, 0) != 0)
+			return 1;
+		printf("链路已停, UI 已发出(屏回按钮页)\n");
+		return 0;
+	}
+	fprintf(stderr, "用法: lcd_sender cam on|off\n");
+	return 2;
+}
+
 int main(int argc, char **argv)
 {
 	const char *cmd = argc > 1 ? argv[1] : "stat";
@@ -655,6 +693,16 @@ int main(int argc, char **argv)
 		do_bars();
 	} else if (!strcmp(cmd, "anim")) {
 		do_anim(argc > 2 ? atoi(argv[2]) : 60);
+	} else if (!strcmp(cmd, "cam")) {
+		if (argc < 3) {
+			fprintf(stderr, "用法: lcd_sender cam on|off\n");
+			return 2;
+		}
+		{
+			int rc = do_cam(argv[2]);
+			close(g_cmd_fd);
+			return rc;
+		}
 	} else if (!strcmp(cmd, "rtos")) {
 		if (argc < 3) {
 			fprintf(stderr, "用法: lcd_sender rtos <cvirtos.bin>\n");

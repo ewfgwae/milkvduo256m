@@ -16,8 +16,14 @@ SDK="${1:-$HOME/duo-sdk-v2}"
 export PATH="$SDK/host-tools/gcc/riscv64-elf-x86_64/bin:$PATH"
 
 cd "$SDK"
+export TOP="$SDK"   # envsetup 的 gettop() 直接引用 $TOP, 没有会在 set -u 下炸
+# SDK 的 envsetup 链路里有"故意的"可失败命令(缺 isp_tuning 目录时 gen_sensor_config.py
+# 打印警告后非零退出), 且内部引用未定义变量 —— source 期间 -e/-u 都得关掉,
+# 否则会在中途静默死掉。返回码只作参考(单独跑也可能非零), 关键看后面 make rtos。
+set +eu
 # shellcheck disable=SC1091
 source build/envsetup_milkv.sh milkv-duo256m-glibc-arm64-sd
+set -eu
 export PATH="$SDK/host-tools/gcc/riscv64-elf-x86_64/bin:$PATH"
 
 cd "$SDK/build"

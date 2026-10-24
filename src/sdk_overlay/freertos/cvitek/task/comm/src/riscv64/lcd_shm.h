@@ -73,6 +73,15 @@
                                     * x0/y0/x1/y1。小核用 LVGL 把它显示出来。
                                     * 这是"画面模式": 进入后小核停掉跑分 demo,
                                     * 没画面时显示黑底(不再刷红/绿/蓝心跳)。 */
+#define LCD_CMD_BTN         0x49   /* 大核 -> 小核: 触发 UI 按钮按下动画并进入
+                                    * "启动中"(等 CAM 首帧切画面, 15s 超时回
+                                    * 待机)。小核不回 ACK(同 CAM 纪律)。 */
+#define LCD_CMD_UI          0x4A   /* 大核 -> 小核: 退出画面模式, 删画面对象,
+                                    * 回 UI 页显示"已停止"。小核不回 ACK。 */
+#define LCD_CMD_EXIT_BTN    0x4B   /* 大核 -> 小核: 画面模式右上角「退出」按钮
+                                    * 出按下动画(纯视觉反馈, ~300ms 弹起; 停
+                                    * 链路仍由大核 cam off 自己做)。非画面模
+                                    * 式忽略。小核不回 ACK。 */
 
 /* ---- 小核固件热更握手 (实现见 task/comm/src/riscv64/hotjump.S) --------
  *   ctrl.reload     @ LCD_RELOAD_REQ_ADDR : 大核 -> 小核。
@@ -127,7 +136,9 @@ struct lcd_shm_stat {
 	volatile uint32_t last_bytes; /* 16: 上一帧推给 SPI 的字节数 */
 	volatile uint32_t err;        /* 20: 出错计数 */
 	volatile uint32_t reload_ack; /* 24: 热更握手, 1=小核已停在跳板 */
-	volatile uint32_t reserved[9];/* 28..63: 补齐到 64B */
+	volatile uint32_t ui_event;   /* 28: 小核 UI 事件计数(按钮点击 +1); 大核守护
+	                                * 轮询此字段感知触摸, 不走 cmdqu(避 8 槽坑) */
+	volatile uint32_t reserved[8];/* 32..63: 补齐到 64B */
 };
 
 struct lcd_shm {

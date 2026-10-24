@@ -93,12 +93,12 @@ cd image
 cmd /c copy /b duo256m-sdcard.img.gz.part-00+duo256m-sdcard.img.gz.part-01+duo256m-sdcard.img.gz.part-02 duo256m-sdcard.img.gz
 ```
 
-插卡上电，屏幕应该是**纯黑底 + 右下角一块 OSD 小字**（不再有跑分 demo）。
-想看到摄像头画面，得再跑大核的 `rtsp2lcd`，见第 6.5 节。
+插卡上电，屏幕应该是**中文 UI 待机页**（标题「智能看家」+「相机画面」大按钮 + 右下角
+OSD 小字）。想看摄像头画面，在板上跑 `/root/lcd_sender cam on` 即可（见 6.5 节）。
 
 > ★ 上面这份整卡镜像里的 `cvirtos.bin` 还是**带 demo 的旧版**（早于 build `0x484A000B`）。
 > 所以第一次上电（或任何一次卡上 `/mnt/data/cvirtos.bin` 仍是旧版的开机），屏上还会先出
-> 一次跑分 demo。想要开箱即黑屏，刷完卡把 `sdcard/rootfs/mnt/data/cvirtos.bin` 和
+> 一次跑分 demo。想要开箱即 UI 待机页，刷完卡把 `sdcard/rootfs/mnt/data/cvirtos.bin` 和
 > `sdcard/rootfs/root/cvirtos.bin` 这两个文件拷进 p2 分区的对应位置即可（`auto.sh`
 > 每次开机都会拿 `/mnt/data/cvirtos.bin` 热更小核，不用重刷镜像、不用动 fip.bin）。
 > 已经开着的板子可以当场换：
@@ -123,7 +123,7 @@ cmd /c copy /b duo256m-sdcard.img.gz.part-00+duo256m-sdcard.img.gz.part-01+duo25
 | `sdcard/boot/fip.bin` | FAT 分区（p1，`/boot`） | FSBL + u-boot + 小核固件（BLCP_2ND 段）+ 常驻热更跳板 |
 | `sdcard/boot/boot.sd` | FAT 分区（p1，`/boot`） | Linux 内核 + 设备树（含 SPI2 的 DMA 请求线映射） |
 | `sdcard/rootfs/mnt/data/auto.sh` | ext4 分区（p2）`/mnt/data/` | 开机自启：热更小核固件（**不再起 `mon`**，见 6.1 的注） |
-| `sdcard/rootfs/mnt/data/cvirtos.bin` | ext4 分区（p2）`/mnt/data/` | 小核固件（build id `0x484A000B`，md5 `53f6b679…`），**每次开机 auto.sh 自动热更进小核** |
+| `sdcard/rootfs/mnt/data/cvirtos.bin` | ext4 分区（p2）`/mnt/data/` | 小核固件（build id `0x484A000D`，md5 `29d29d8a…`），**每次开机 auto.sh 自动热更进小核** |
 | `sdcard/rootfs/mnt/data/lcd_sender` | ext4 分区（p2）`/mnt/data/` | 大核 aarch64 静态程序（含 `rtos` 热更子命令） |
 | `sdcard/rootfs/root/*` | ext4 分区（p2）`/root/` | 同一批文件的副本 + 大核用户态例子，供手动调试 |
 | `sdcard/rootfs/etc/init.d/S99user` | ext4 分区（p2）`/etc/init.d/` | 原厂启动脚本（**未改**），它负责调用 `/mnt/data/auto.sh` |
@@ -307,9 +307,18 @@ cd duo-examples && source envsetup.sh          # 选 2 = Duo256M，选 riscv/arm
 
 整套功能 = 3 个文件：`/boot/fip.bin`、`/boot/boot.sd`、`/mnt/data/{auto.sh,cvirtos.bin,lcd_sender}`。
 
-**上电后屏上是什么**：一块**纯黑屏 + 右下角 OSD 小字**（帧率 / A53 占用率 / C906 占用率）。
-小核固件从 build `0x484A000B` 起**不再自带 `lv_demo_benchmark`**，所以屏上任何画面都必须
-由大核点播（`lcd_sender fill/bars/anim`，或第六章那套摄像头链路）。想确认小核在跑：
+**上电后屏上是什么**：一页**中文 UI 待机页**——标题「智能看家」、中间「相机画面」大按钮、
+状态栏「待机」、左下角命令提示；右下角 OSD（帧率 / A53 占用率 / C906 占用率）不变。
+终端一条命令即可完成"按下按钮 → 起链路 → 画面满屏"：
+
+```bash
+/root/lcd_sender cam on     # 起画面（先出按钮动画，15s 内首帧没到则红字超时回待机）
+/root/lcd_sender cam off    # 停画面，回按钮页「已停止」
+```
+
+（屏无触摸，这是当前唯一入口；触摸芯片定型号后由 plans/06 接管。）
+小核固件从 build `0x484A000B` 起不再自带 `lv_demo_benchmark`，`0x484A000C` 起上电默认页
+换成上述 UI。想确认小核在跑：
 
 ```bash
 ssh root@192.168.42.1 '/root/lcd_sender ping'
@@ -329,6 +338,8 @@ ssh root@192.168.42.1 '/root/lcd_sender ping'
 | `lcd_sender fill 0xF800` | 整屏纯色（RGB565） |
 | `lcd_sender bars` | 画 8 条彩条 |
 | `lcd_sender anim 300` | 移动白条，局部刷新，跑 300 帧 |
+| `lcd_sender cam on` | 屏上按钮按下动画 → 起摄像头链路 → 画面满屏（等价于替你按屏上按钮） |
+| `lcd_sender cam off` | 先按屏上「退出」按钮（发 `LCD_CMD_EXIT_BTN`），停链路收干净后回 UI「已停止」 |
 | `lcd_sender mon 1000` | 每秒采样 `/proc/stat`，把大核 CPU 占用率发给小核 OSD，并接回小核占用率与帧率。★ **和 `rtsp2lcd` 互斥，见 6.1 的注** |
 | `lcd_sender rtos <固件>` | **热更小核固件**（见 5.4） |
 
@@ -363,6 +374,9 @@ ssh root@192.168.42.1 '/root/lcd_sender ping'
 | `0x484A0008` | `0x8fe6ce20` | 帧率修复版 |
 | `0x484A000A` | `0x8fe6cfe0` | 带 `LCD_CMD_CAM` 画面模式（屏上仍有跑分 demo） |
 | `0x484A000B` | `0x8fe544a0` | 去掉 `lv_demo_benchmark`：上电纯黑屏 + 右下角 OSD，画面只由大核点播 |
+| `0x484A000C` | `0x8fe82818` | 中文 UI 待机页 + 按钮状态机（plans/05；`LCD_CMD_BTN 0x49` / `LCD_CMD_UI 0x4A`） |
+| `0x484A000D` | `0x8fe82818` | 同 0C，启动超时 25s → 15s（基址不变：只改了常量，没动体积） |
+| `0x484A000E` | `0x8fe829d8` | 画面模式右上角「退出」按钮（`LCD_CMD_EXIT_BTN 0x4B`，`cam off` 触发按下动画） |
 
 ★ 去 demo 那版把 `.bss` 整段挪了位，**地址一下跳了 ~90KB**。还按老地址读会得到一片垃圾，
 很容易误判成"固件没起来"。板上 `/root/probe.sh` 里 `P=` 就是基址，换固件后改这里；
@@ -410,7 +424,13 @@ devmem 0x8fec3958 32      # tmoN
 屏按 320x240 横屏，摄像头出的是 1280x720，中间要解码 + 缩放。这条路走的是
 「RTSP 收流 → `CVI_VDEC` 硬件解码 → 缩放 + YUV→RGB565(大端) → 共享内存 → `LCD_CMD_CAM`」。
 
-**两步跑起来**（板上执行；板子没有编译器，`rtsp2lcd` 要先在 WSL 里编好再传上去）：
+**最省事：一条命令**（2026-10-24 起，屏上先出按钮按下动画，再自动走完下面两步）：
+
+```bash
+/root/lcd_sender cam on      # 停画面用: /root/lcd_sender cam off
+```
+
+**手动两步跑起来**（板上执行；板子没有编译器，`rtsp2lcd` 要先在 WSL 里编好再传上去）：
 
 ```bash
 # 1) 起取流服务（摄像头 → H.264 1280x720，RTSP 服务端监听 554）

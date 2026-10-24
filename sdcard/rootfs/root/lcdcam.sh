@@ -5,6 +5,8 @@
 # 用法(板上):
 #   sh /root/lcdcam.sh              # 前台跑, Ctrl-C 停
 #   nohup sh /root/lcdcam.sh &      # 后台常驻
+#   sh /root/lcdcam.sh start        # 已在跑就什么都不做, 没跑才 nohup 自身
+#                                   # (lcd_sender cam on 用它, 防连打出两个循环)
 #   sh /root/lcdcam.sh stop         # 停推送(循环 + rtsp2lcd)
 #   sh /root/lcdcam.sh stopall      # 全停(连取流服务 sample_vi_fd 一起收)
 #
@@ -112,6 +114,27 @@ if [ "$1" = "stop" ] || [ "$1" = "stopall" ]; then
 	echo "[lcdcam] 剩余进程:"
 	ps -o pid,args 2>/dev/null | grep -E 'lcdcam|rtsp2lcd|sample_vi_fd' | grep -v grep
 	echo "[lcdcam] (上面为空即已停干净)"
+	exit 0
+fi
+
+# ---- start 子命令(plans/05: 给 lcd_sender cam on 用) ----
+# 已有循环在跑就直接退出(防连打两次 cam on 起出两个循环), 没有才 nohup 自身。
+# 判定与 kill_other_loops 同一纪律: 只认 argv[1] 是本脚本路径的进程,
+# 不对整条 cmdline 做 grep(会误杀 ssh 进来的 sh -c 层)。
+if [ "$1" = "start" ]; then
+	for _p in /proc/[0-9]*; do
+		_ppid=${_p#/proc/}
+		[ "$_ppid" = "$$" ] && continue
+		[ -r "$_p/cmdline" ] || continue
+		_argv2=$(tr '\000' '\n' <"$_p/cmdline" 2>/dev/null | sed -n 2p)
+		case "$_argv2" in
+		*/lcdcam.sh)
+			echo "[lcdcam] 循环已在跑 pid=$_ppid, 不重复启动"
+			exit 0 ;;
+		esac
+	done
+	echo "[lcdcam] 后台启动推流循环"
+	nohup sh "$0" >/dev/null 2>&1 &
 	exit 0
 fi
 

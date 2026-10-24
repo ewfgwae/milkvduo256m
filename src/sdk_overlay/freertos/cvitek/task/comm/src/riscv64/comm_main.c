@@ -253,6 +253,22 @@ void prvCmdQuRunTask(void *pvParameters)
 			 *   (2026.09.28 记录里那个老坑)。 */
 			lvgl_cam_submit();
 			break;
+		case LCD_CMD_BTN:
+			/* 大核触发 UI 按钮(plans/05): 只置标志, 按下动画与状态机
+			 * 都在 LVGL 任务里跑(lvgl_task.c 的 ui_state_poll())。
+			 * 同 CAM 纪律, **不回 ACK**。 */
+			lvgl_ui_btn_trigger();
+			break;
+		case LCD_CMD_UI:
+			/* 大核要求退画面模式回 UI 页(大核侧已先把链路停干净)。
+			 * 只置标志, 不回 ACK。 */
+			lvgl_ui_return_trigger();
+			break;
+		case LCD_CMD_EXIT_BTN:
+			/* 大核触发画面模式「退出」按钮按下动画(plans/05): 纯视觉
+			 * 反馈, 只置标志, 不回 ACK。停链路仍由大核自己负责。 */
+			lvgl_ui_exitbtn_trigger();
+			break;
 		case LCD_CMD_RTOS_RELOAD:
 			/* 固件热更第一跳: 大核要原地覆盖 0x8FE00000 的应用区,
 			 * 所以本任务必须先把控制权交给常驻在 0x8FF90000 的

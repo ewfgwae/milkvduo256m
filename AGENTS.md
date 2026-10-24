@@ -20,7 +20,7 @@ CVI_VDEC 硬件解码，把画面经**共享内存（像素）+ IPCM mailbox / c
 | 02 | 大核工具 | `plans/02-bigcore-tools/` | lcd_sender、rtsp2lcd、lcdcam.sh、编译与部署 | 稳定运行 |
 | 03 | 摄像头链路 | `plans/03-camera-pipeline/` | sample_vi_fd、RTSP 服务端 quirk、断流诊断、自愈 | 稳定运行 |
 | 04 | ST7789 显示 | `plans/04-display-st7789/` | 接线、SPI2 + sysDMA、屏方向、刷新性能 | 稳定运行 |
-| 05 | 按钮界面 | `plans/05-ui-button/` | LVGL 中文 UI + 按钮联动摄像头（`lcd_sender cam on/off`） | **待实施** |
+| 05 | 按钮界面 | `plans/05-ui-button/` | LVGL 中文 UI + 按钮联动摄像头（`lcd_sender cam on/off`） | 稳定运行 |
 | 06 | 触摸 | `plans/06-touch/` | 触摸驱动骨架 + 大核守护进程（芯片型号待用户确认） | **待实施** |
 | 07 | 打包发布 | `plans/07-packaging/` | sdcard/ 同步、整卡镜像重制、校验清单 | 稳定运行 |
 

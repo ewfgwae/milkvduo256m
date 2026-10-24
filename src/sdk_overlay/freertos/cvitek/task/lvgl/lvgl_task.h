@@ -25,4 +25,13 @@ void lvgl_mon_reply(uint32_t *small_pct, uint32_t *fps_x10);
  * (见 lvgl_task.c 的 lvgl_cam_poll())。**不要回 ACK**。 */
 void lvgl_cam_submit(void);
 
+/* ---- UI 页(plans/05) ---------------------------------------------------
+ * comm_main.c 的 cmdqu 任务收到 LCD_CMD_BTN / LCD_CMD_UI 时调用, 与
+ * lvgl_cam_submit() 同一纪律: 只置标志、不碰 LVGL 对象、**不回 ACK**。
+ * 状态机推进见 lvgl_task.c 的 ui_state_poll()。 */
+void lvgl_ui_btn_trigger(void);      /* LCD_CMD_BTN: 按下动画 + 进"启动中" */
+void lvgl_ui_return_trigger(void);   /* LCD_CMD_UI: 退画面模式回 UI 页 */
+void lvgl_ui_exitbtn_trigger(void);  /* LCD_CMD_EXIT_BTN: 画面模式「退出」
+                                      * 按钮出按下动画(纯视觉, 不退画面) */
+
 #endif /* __LVGL_TASK_H__ */
