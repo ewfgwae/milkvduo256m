@@ -36,4 +36,7 @@ setsid scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 
 - 整卡镜像里的 `cvirtos.bin` 若与 `sdcard/` 里最新版不一致，烧出的卡首次开机会先跑一次旧版
   （README 第 2 节的注）——重制镜像时两处必须同源。
+- **2026-10-25 起 `sdcard/boot/fip.bin` 已换载荷（build 0x484A000F），`image/` 整卡镜像
+  里的 fip 还是带 demo 的旧版**——烧镜像的卡首次上电仍会跑一次 demo，需按 README 第 2 节
+  注补拷 fip；彻底解决要重制镜像（PLAN 二）。
 - FAT 分区（p1）在 Windows 下可直接拷贝，ext4（p2）必须走 WSL/镜像，别用 Windows 工具直接写。

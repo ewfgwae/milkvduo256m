@@ -61,7 +61,44 @@ sudo dd if=duo256m-sdcard.img of=/dev/sdX bs=4M conv=fsync status=progress && sy
 - [ ] `nohup sh /root/lcdcam.sh &` 出画面、`[17]` +30/秒；
 - [ ] 重启一次，行为一致（auto.sh 热更的固件就是新版）。
 
-## 四、待办清单
+## 四、fip.bin 更换小核固件载荷（BLCP_2ND）流程
+
+背景：fip.bin 里打包着一份小核固件（BLCP_2ND，上电 → auto.sh 热更之前屏上跑的就是它）。
+2026-10-25 前它一直是带跑分 demo 的老版（0x484A0009），冷启前 ~40s 屏上出"LVGL 测试"，
+用户要求换掉 → 首次执行本流程（产物 md5 `c207b636…`，板上 /boot 备份
+`fip.bak.0x484A0009`）。工具：SDK 自带 `fsbl/plat/cv181x/fiptool.py`（fip 格式：
+PARAM1/BLCP/BL2 + PARAM2(各段 CRC/偏移) + DDR_PARAM/BLCP_2ND/MONITOR/LOADER_2ND；
+BLCP_2ND 不压缩、512 对齐、CRC16-CCITT）。
+
+**三道关卡，任何一关不过就停手**：
+
+1. **往返保真**：`fiptool.py genfip --OLD_FIP 旧fip /tmp/rt.bin`，`cmp` 必须逐字节一致
+   ——证明工具对现有 fip 的读/写完全确定（含 LZMA 的 u-boot 载荷原样保留、无隐藏段被丢）。
+2. **载荷体检**：按 PARAM2 的 BLCP_2ND_LOADADDR/SIZE/RUNADDR 提取旧载荷，
+   `crc_hqx` 与 TOC 的 CKSUM 对上、RUNADDR = 0x8FE00000、新旧固件补齐 512 后同尺寸
+   （1640640 → 0x190A00）、跳板段（应用区后 2240B）与新版逐字节一致。
+3. **差异审计**：`genfip --OLD_FIP 旧 --BLCP_2ND 新固件 --BLCP_2ND_RUNADDR 0x8FE00000`
+   出新 fip；逐字节 diff，差异只允许三处——载荷区、BLCP_2ND_CKSUM（载荷 CRC）、
+   PARAM2_CKSUM（PARAM2 表 CRC，因前者而变）；总尺寸不变（1928192）。
+
+```bash
+# 生成(WSL, SDK 在 ~/duo-sdk-v2):
+python3 ~/duo-sdk-v2/fsbl/plat/cv181x/fiptool.py genfip \
+    --OLD_FIP sdcard/boot/fip.bin \
+    --BLCP_2ND ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
+    --BLCP_2ND_RUNADDR 0x8FE00000 fip_new.bin
+```
+
+部署与验证：
+1. scp 上板 → `cp /boot/fip.bin /boot/fip.bak.<旧build>` 备份 → `cp 新 /boot/fip.bin` →
+   `sync` → 两边 md5 对上。
+2. **纯 fip 验证**（判据最硬）：`mv /mnt/data/cvirtos.bin /root/` 后重启——auto.sh 无固件
+   可热更，屏上跑的就是纯 fip 载荷；探针 `[14]` 应 = 新 build id、无 `/tmp/lcd_reload.log`。
+   （2026-10-25 实测：`[14]=0x484A000F`、启动页 501fps 转圈。）
+3. 恢复 `/mnt/data/cvirtos.bin` 再重启，auto.sh 热更 + ui 链路回归正常。
+4. 最坏情况（fip 坏到起不来）：读卡器整卡重写（`image/` 或备份）。
+
+## 五、待办清单
 
 - [ ] plans/05/06 实施完后：README 第 2/3 节的"上电行为"与文件清单要重写一轮，
       整卡镜像重制一次（走本 PLAN 二）。

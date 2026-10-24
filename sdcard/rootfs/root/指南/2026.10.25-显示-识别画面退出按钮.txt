@@ -99,7 +99,11 @@
   3) /root/lcd_sender 与 /mnt/data/lcd_sender: md5 5fa812e8e4b03a1bc6a896a206f1632f
      (新增 ui 子命令);
      /mnt/data/auto.sh: md5 4d1ac6450cb2340b70777cfff74b6946(热更成功后追加发 ui)。
-  4) 仓库 sdcard/ 的 cvirtos.bin×2 / lcd_sender×2 / auto.sh 与板上逐字节一致。
+  4) ★ /boot/fip.bin: md5 c207b636348c6c5e97410016d82d8d09 —— 里面打包的小核固件
+     已从带 demo 的老版(0x484A0009)换成 0x484A000F(2026-10-25 凌晨, 见变更记录
+     末条)。旧版备份在板上 /boot/fip.bak.0x484A0009 与仓库 git 历史。
+  5) 仓库 sdcard/ 的 cvirtos.bin×2 / lcd_sender×2 / auto.sh / boot/fip.bin
+     与板上逐字节一致。
 
 ================================================================================
   二、变更记录
@@ -184,3 +188,40 @@
   4) 教训:
      从 PC 给板传文件别把 stderr 整个丢进 /dev/null —— 本次一次 scp 静默
      失败(probe.sh 传丢), 靠 md5 比对才发现, 重传即好。传完必 md5, 两边对上才算数。
+
+------------------------------------------------------------------------
+2026-10-25 01:05 ~ 01:45 | (本会话) | fip.bin 载荷换 0F: 冷启跑分 demo 根治
+------------------------------------------------------------------------
+  1) 做了什么 / 为什么:
+     用户反馈重启后前 ~40s 屏上仍出"LVGL 测试"——那是 fip.bin 里打包的带 demo
+     老固件(0x484A0009)在 auto.sh 热更之前跑的, 与热更后的新固件无关。
+     用 SDK 自带 fsbl/plat/cv181x/fiptool.py 只换 fip 的 BLCP_2ND 载荷(小核固件),
+     其余段一个字节不动。完整流程沉淀在仓库 plans/07/PLAN.md 第四节(三道关卡),
+     要点见下。
+  2) 完整命令(可直接复制执行; WSL, fip 相关文件都在 /home/chen/fip_p6/):
+       # 关1 往返保真: 输出必须与原 fip 逐字节一致
+       python3 ~/duo-sdk-v2/fsbl/plat/cv181x/fiptool.py genfip \
+           --OLD_FIP sdcard/boot/fip.bin /tmp/rt.bin && cmp sdcard/boot/fip.bin /tmp/rt.bin
+       # 关2+关3 换载荷并审计(差异只允许: 载荷区 0xF800..0x190F00 + 两个 CRC 字段
+       #   0xE820 BLCP_2ND_CKSUM / 0xE808 PARAM2_CKSUM; 总尺寸 1928192 不变)
+       python3 ~/duo-sdk-v2/fsbl/plat/cv181x/fiptool.py genfip \
+           --OLD_FIP sdcard/boot/fip.bin \
+           --BLCP_2ND ~/duo-sdk-v2/freertos/cvitek/install/bin/cvirtos.bin \
+           --BLCP_2ND_RUNADDR 0x8FE00000 fip_new.bin
+       # 部署(板上): 备份 -> 替换 -> 校验
+       cp /boot/fip.bin /boot/fip.bak.0x484A0009
+       cp <fip_new.bin> /boot/fip.bin && sync && md5sum /boot/fip.bin
+  3) 结果 / 验证:
+     新 fip md5 c207b636348c6c5e97410016d82d8d09(旧 a5a5ca01…);
+     纯 fip 验证(mv /mnt/data/cvirtos.bin /root 后重启, auto.sh 无固件可热更):
+       [14]=0x484A000F、启动页 501fps 转圈、/tmp/lcd_reload.log 不存在
+       —— 屏上跑的就是 fip 里的 0F, 跑分 demo 彻底消失;
+     恢复 cvirtos.bin 再重启: 热更+ui 链路正常(1.0fps 按钮页),
+     cam on/off sanity: [16]=1、[17]+30/s、off 干净。
+     旧载荷体检亦过: crc_hqx 与 TOC 一致、跳板段(应用区后 2240B)与新版逐字节同。
+  4) 教训:
+     a) fip 的 BLCP_2ND 的 CRC 是 CRC16-CCITT(crc_hqx), 不是 crc32; TOC 里存成
+        pack('<H',crc)+0xFECA。
+     b) 探针在 .bss、build id 是 RISC-V 立即数拆分, 在载荷里直接搜 4 字节魔数
+        搜不到(错误示范: 想靠搜 0x484A0009 字节序确认版本, 搜不到什么也证明不了)。
+     c) 最坏情况(fip 起不来)恢复手段 = 读卡器整卡重写; 本次三道关卡全过, 未用到。

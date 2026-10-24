@@ -98,18 +98,22 @@ cmd /c copy /b duo256m-sdcard.img.gz.part-00+duo256m-sdcard.img.gz.part-01+duo25
 `auto.sh` 热更成功后自动换成**中文 UI 待机页**（标题「智能看家」+「相机画面」大按钮）。
 想看摄像头画面，在板上跑 `/root/lcd_sender cam on` 即可（见 6.5 节）。
 
-> ★ 上面这份整卡镜像里的 `cvirtos.bin` 还是**带 demo 的旧版**（早于 build `0x484A000B`）。
-> 所以第一次上电（或任何一次卡上 `/mnt/data/cvirtos.bin` 仍是旧版的开机），屏上还会先出
-> 一次跑分 demo。想要开箱即 UI 待机页，刷完卡把 `sdcard/rootfs/mnt/data/cvirtos.bin` 和
-> `sdcard/rootfs/root/cvirtos.bin` 这两个文件拷进 p2 分区的对应位置即可（`auto.sh`
-> 每次开机都会拿 `/mnt/data/cvirtos.bin` 热更小核，不用重刷镜像、不用动 fip.bin）。
-> 已经开着的板子可以当场换：
+> ★ 上面这份整卡镜像里的 `fip.bin`/`cvirtos.bin` 还是**旧版**（fip 里的小核固件带跑分
+> demo）。所以只用镜像刷的卡，第一次上电会先跑一次 demo，~40s 后 `auto.sh` 热更成新版
+> 才换「正在初始化」启动页 → 按钮页。想**开箱即是启动页（无 demo）**，刷完卡把仓库
+> `sdcard/boot/fip.bin`（已含 build `0x484A000F`）拷进 p1 分区 `/boot/`，再把
+> `sdcard/rootfs/mnt/data/cvirtos.bin`、`sdcard/rootfs/root/cvirtos.bin` 拷进 p2 对应
+> 位置即可（`auto.sh` 每次开机都会拿 `/mnt/data/cvirtos.bin` 热更小核）。
+> 已经开着的板子可以当场换固件：
 >
 > ```bash
 > scp sdcard/rootfs/mnt/data/cvirtos.bin root@192.168.42.1:/mnt/data/cvirtos.bin.new
 > ssh root@192.168.42.1 'mv -f /mnt/data/cvirtos.bin.new /mnt/data/cvirtos.bin; sync'
 > ssh root@192.168.42.1 '/root/lcd_sender rtos /mnt/data/cvirtos.bin'   # 立刻生效, 不必重启
 > ```
+>
+> （`fip.bin` 平时**不要动**——它有变砖风险；要换里面的固件走 `plans/07` 的
+> fiptool 载荷替换流程，2026-10-25 已执行过一次。）
 
 > 卡的容量：镜像只有 897 MiB，**任何 ≥1GB 的卡都能写**（写完整卡会多出未分配空间，
 > 不影响启动；想用完剩余空间可用 `cfdisk`/`parted` 扩 p2 后再 `resize2fs`）。
@@ -122,7 +126,7 @@ cmd /c copy /b duo256m-sdcard.img.gz.part-00+duo256m-sdcard.img.gz.part-01+duo25
 
 | 仓库里的路径 | 拷到卡的哪里 | 作用 |
 |---|---|---|
-| `sdcard/boot/fip.bin` | FAT 分区（p1，`/boot`） | FSBL + u-boot + 小核固件（BLCP_2ND 段）+ 常驻热更跳板 |
+| `sdcard/boot/fip.bin` | FAT 分区（p1，`/boot`） | FSBL + u-boot + 小核固件（BLCP_2ND 段，现 = build `0x484A000F` 启动页版）+ 常驻热更跳板。★ 有变砖风险，换载荷走 `plans/07` 的 fiptool 流程 |
 | `sdcard/boot/boot.sd` | FAT 分区（p1，`/boot`） | Linux 内核 + 设备树（含 SPI2 的 DMA 请求线映射） |
 | `sdcard/rootfs/mnt/data/auto.sh` | ext4 分区（p2）`/mnt/data/` | 开机自启：热更小核固件，成功后发 `lcd_sender ui` 离启动页（**不再起 `mon`**，见 6.1 的注） |
 | `sdcard/rootfs/mnt/data/cvirtos.bin` | ext4 分区（p2）`/mnt/data/` | 小核固件（build id `0x484A000F`，md5 `24c5fcd3…`），**每次开机 auto.sh 自动热更进小核** |
