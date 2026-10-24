@@ -11,9 +11,10 @@
 #     0x484A000D (同 0C, 超时 15s)         -> 0x8FE82818 (体积没变, 基址不变)
 #     0x484A000E (画面模式「退出」按钮)    -> 0x8fe829d8
 #     0x484A000F (上电启动页, plans/05 P6) -> 0x8fe82b98
+#     0x484A0010 (启动页美化+重画自愈)     -> 0x8fe82d18
 #
 # ★ 小核是 RV64, unsigned long = 8 字节 —— 步长必须是 8, 4 字节读出来全错位。
-P=${PROBE_BASE:-0x8fe82b98}
+P=${PROBE_BASE:-0x8fe82d18}
 d() { devmem $((P + $1*8)) 32 2>/dev/null; }
 echo "  base=$P"
 echo "  [0]魔数    $(d 0)   [1]就绪 $(d 1)   [14]buildid $(d 14)"

@@ -1,9 +1,10 @@
 /* 小核(C906L)上的 LVGL 主任务 —— 屏幕的唯一所有者
  *
  * 屏幕内容: **不再跑 lv_demo_benchmark**(2026-10-03 去掉)。上电先是启动页
- * (黑底 + 转圈 + 「正在初始化...」, 见下面"启动页"一节), 大核就绪(发来
- * LCD_CMD_UI)后才换成"智能看家" UI 待机页(标题 + 「相机画面」大按钮 + 状态栏,
- * 详见"UI 页"一节), 右下角叠一块 OSD, 显示帧率和两个核的 CPU 占用率:
+ * (深蓝渐变底 + 标题「智能看家」+ 转圈 + 「正在初始化」, 见下面"启动页"一节),
+ * 大核就绪(发来 LCD_CMD_UI)后才换成"智能看家" UI 待机页(标题 + 「相机画面」
+ * 大按钮 + 状态栏, 详见"UI 页"一节), 右下角叠一块 OSD, 显示帧率和两个核的
+ * CPU 占用率:
  *
  *   nn.n FPS       <- 帧率(一位小数)
  *   nn% A53        <- 大核占用率
@@ -78,7 +79,7 @@ extern void sysdma_selftest(void);
 /* 每改一版小核固件就把这里 +1: 免烧热更(见 hotjump.S / lcd_sender rtos)之后
  * 用 `devmem <g_lvgl_probe+0x70> 32` 一眼就能确认芯片上跑的到底是哪一版
  * (g_lvgl_probe 的地址随固件体积变化, 用 nm cvirtos.elf | grep g_lvgl_probe 查)。 */
-#define LVGL_PROBE_BUILD_ID     0x484A000FUL        /* 'HJ' + 序号; 0D=超时 15s, 0E=画面模式「退出」按钮, 0F=上电启动页(Phase 6) */
+#define LVGL_PROBE_BUILD_ID     0x484A0010UL        /* 'HJ' + 序号; 0E=画面模式「退出」按钮, 0F=上电启动页, 10=启动页美化(渐变底+标题)+开机重画自愈 */
 volatile unsigned long g_lvgl_probe[20];
 
 /* ==================== 运行时间统计的计数源 ============================
@@ -437,9 +438,9 @@ static void ui_create(void)
 }
 
 /* ==================== 启动页(Phase 6) ================================ *
- * 上电默认页: 全屏黑底 + 56px 转圈 + 「正在初始化...」。大核(A53/Linux)没起来的
- * 整段时间屏上只有它 —— 完整按钮 UI 已照常建好但整体隐藏, 收到下面任一命令才
- * 揭开(boot_leave, 三个入口都调它):
+ * 上电默认页: 深蓝渐变底 + 标题「智能看家」+ 青色下划线 + 56px 转圈 +
+ * 「正在初始化」。大核(A53/Linux)没起来的整段时间屏上只有它 —— 完整按钮 UI
+ * 已照常建好但整体隐藏, 收到下面任一命令才揭开(boot_leave, 三个入口都调它):
  *   LCD_CMD_UI  auto.sh 热更成功后发 / lcd_sender ui / cam off 末步 -> 待机页
  *   LCD_CMD_BTN cam on 当开机首个命令 -> 先出 UI 页再播按下动画
  *   首帧 CAM    不 BTN 直接起 rtsp2lcd -> 直进画面(启动页不能残留盖在画面上)
@@ -447,32 +448,71 @@ static void ui_create(void)
  * 路径上; INIT 是 lcd_sender rtos 热更后的 state 轮询, 不能让它把启动页顶掉。
  * 无超时 —— 大核没起来就永远转圈, 这是需求语义本身。
  *
- * 文案「正在初始化...」: 「正在启动」的 启/动 都不在 SIMSUN16(2026-10-25 逐字
- * 预检), 已验证在库的备选: 正在等待... / 等待中...。 */
-static lv_obj_t *s_boot_cont;
+ * 文案「正在初始化」(0x484A0010 起**不带句点**): 「正在启动」的 启/动 不在
+ * SIMSUN16; ASCII 的句点 '.' 同样不在(位图级验证, 2026-10-25), "..."画不出来。
+ *
+ * ★ 开机重画自愈: 0x484A000F 在纯 fip 冷启窗口暴露"只有转圈正常、其余花屏"
+ * —— 转圈每帧重画会自愈, 背景与文字只画一次, 首刷被开机瞬态污染就永远留着。
+ * 这里在 300ms/1200ms 各强制全屏重画一次(lv_timer), 静态内容也能自愈。 */
+static lv_obj_t   *s_boot_cont;
+static lv_timer_t *s_boot_repaint_timer;
+static uint8_t     s_boot_repaints;
+
+static void boot_repaint_cb(lv_timer_t *timer)
+{
+	lv_obj_invalidate(lv_scr_act());        /* 全屏重画一次 */
+	if (++s_boot_repaints >= 2)
+		lv_timer_pause(timer);           /* 两次即止; 定时器留给 boot_leave 删 */
+}
 
 static void boot_create(void)
 {
-	lv_obj_t *cont, *spin, *lbl;
+	lv_obj_t *cont, *title, *bar, *sub, *spin, *lbl;
 
-	/* 全屏不透明黑底容器, 建在 UI 页之后 = 盖在 UI 页之上(sys 层 OSD 之下) */
+	/* 全屏容器: 深蓝->近黑的垂直渐变底(比纯黑柔和, 与 UI 页青色系同调),
+	 * 建在 UI 页之后 = 盖在 UI 页之上(sys 层 OSD 之下) */
 	cont = lv_obj_create(lv_scr_act());
 	lv_obj_set_size(cont, LCD_W, LCD_H);
 	lv_obj_center(cont);
-	lv_obj_set_style_bg_color(cont, lv_color_black(), 0);
+	lv_obj_set_style_bg_color(cont, lv_color_hex(0x0A1930), 0);
+	lv_obj_set_style_bg_grad_color(cont, lv_color_hex(0x02060D), 0);
+	lv_obj_set_style_bg_grad_dir(cont, LV_GRAD_DIR_VER, 0);
 	lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
 	lv_obj_set_style_border_width(cont, 0, 0);
 	lv_obj_set_style_pad_all(cont, 0, 0);
 	lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
 
+	/* 标题 + 青色下划线 + 副标题 —— 与 UI 待机页同款品牌元素 */
+	title = lv_label_create(cont);
+	lv_obj_set_style_text_font(title, &lv_font_simsun_16_cjk, 0);
+	lv_obj_set_style_text_color(title, lv_color_white(), 0);
+	lv_obj_set_style_text_letter_space(title, 6, 0);
+	lv_label_set_text(title, "智能看家");
+	lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 22);
+
+	bar = lv_obj_create(cont);
+	lv_obj_set_size(bar, 100, 3);
+	lv_obj_set_style_radius(bar, 0, 0);
+	lv_obj_set_style_bg_color(bar, lv_color_hex(0x00E5FF), 0);
+	lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+	lv_obj_set_style_border_width(bar, 0, 0);
+	lv_obj_align_to(bar, title, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
+
+	sub = lv_label_create(cont);
+	lv_obj_set_style_text_font(sub, &lv_font_montserrat_14, 0);
+	lv_obj_set_style_text_color(sub, lv_palette_main(LV_PALETTE_GREY), 0);
+	lv_obj_set_style_text_letter_space(sub, 1, 0);
+	lv_label_set_text(sub, "MILK-V DUO 256M");
+	lv_obj_align_to(sub, bar, LV_ALIGN_OUT_BOTTOM_MID, 0, 7);
+
 	/* 转圈: 「启动中」那只 spinner 的放大版, 同一套青色系 */
 	spin = lv_spinner_create(cont, 150, 90);
 	lv_obj_set_size(spin, 56, 56);
-	lv_obj_align(spin, LV_ALIGN_CENTER, 0, -14);
+	lv_obj_align(spin, LV_ALIGN_CENTER, 0, 10);
 	lv_obj_set_style_border_width(spin, 0, LV_PART_MAIN);
 	lv_obj_set_style_arc_width(spin, 6, LV_PART_MAIN);
-	lv_obj_set_style_arc_color(spin, lv_color_hex(0x37474F), LV_PART_MAIN);
+	lv_obj_set_style_arc_color(spin, lv_color_hex(0x1E3A5F), LV_PART_MAIN);
 	lv_obj_set_style_arc_width(spin, 6, LV_PART_INDICATOR);
 	lv_obj_set_style_arc_color(spin, lv_color_hex(0x00E5FF), LV_PART_INDICATOR);
 
@@ -480,16 +520,24 @@ static void boot_create(void)
 	lv_obj_set_style_text_font(lbl, &lv_font_simsun_16_cjk, 0);
 	lv_obj_set_style_text_color(lbl, lv_color_hex(0xB0BEC5), 0);
 	lv_obj_set_style_text_letter_space(lbl, 2, 0);
-	lv_label_set_text(lbl, "正在初始化...");
+	lv_label_set_text(lbl, "正在初始化");
 	lv_obj_align_to(lbl, spin, LV_ALIGN_OUT_BOTTOM_MID, 0, 14);
 
 	s_boot_cont = cont;
+
+	/* 开机重画自愈(见上面小节注释): 300ms 起, 再补一次 1200ms */
+	s_boot_repaints       = 0;
+	s_boot_repaint_timer  = lv_timer_create(boot_repaint_cb, 300, NULL);
 }
 
-/* 幂等: 启动页还在时才动手 —— 删容器、揭开按钮 UI 页 */
+/* 幂等: 启动页还在时才动手 —— 删容器(连带重画定时器)、揭开按钮 UI 页 */
 static void boot_leave(void)
 {
 	if (s_boot_cont != NULL) {
+		if (s_boot_repaint_timer != NULL) {
+			lv_timer_del(s_boot_repaint_timer);
+			s_boot_repaint_timer = NULL;
+		}
 		lv_obj_del(s_boot_cont);
 		s_boot_cont = NULL;
 		lv_obj_clear_flag(s_ui_cont, LV_OBJ_FLAG_HIDDEN);
